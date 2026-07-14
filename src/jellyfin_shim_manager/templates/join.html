@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect to the TV</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 2rem; background: #111; color: #eee; }
+    button { font-size: 1.2rem; padding: 0.8rem 1.5rem; margin: 0.5rem; border-radius: 8px; border: none; }
+    #code { font-size: 2.5rem; letter-spacing: 0.2rem; margin: 1.5rem 0; }
+    #choice, #code-box { display: none; }
+    input[type=text] { font-size: 1rem; padding: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Connect your Jellyfin account</h1>
+  <button id="start-btn">Connect account</button>
+
+  <div id="code-box">
+    <p>Open Jellyfin on your phone (already signed in) &rarr; user menu &rarr; Quick Connect,
+       and enter this code:</p>
+    <div id="code">......</div>
+    <p id="waiting">Waiting for approval...</p>
+  </div>
+
+  <div id="choice">
+    <p>Logged in! How should this login behave?</p>
+    <input type="text" id="name-input" placeholder="Optional name (e.g. alice)">
+    <br>
+    <button onclick="finish('permanent')">This is my TV too (permanent)</button>
+    <button onclick="finish('temporary')">Just watching now (temporary)</button>
+  </div>
+
+  <p id="result"></p>
+
+  <script>
+    let sessionId = null;
+    let pollTimer = null;
+
+    document.getElementById('start-btn').onclick = async () => {
+      document.getElementById('start-btn').style.display = 'none';
+      const res = await fetch('/join/start', { method: 'POST' });
+      const data = await res.json();
+      sessionId = data.id;
+      document.getElementById('code-box').style.display = 'block';
+      pollTimer = setInterval(poll, 2000);
+    };
+
+    async function poll() {
+      const res = await fetch(`/join/status/${sessionId}`);
+      const data = await res.json();
+      if (data.code) {
+        document.getElementById('code').textContent = data.code;
+      }
+      if (data.done) {
+        clearInterval(pollTimer);
+        document.getElementById('waiting').textContent = 'Approved!';
+        document.getElementById('choice').style.display = 'block';
+      }
+    }
+
+    async function finish(type) {
+      const name = document.getElementById('name-input').value;
+      const res = await fetch('/join/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId, type: type, name: name })
+      });
+      const data = await res.json();
+      document.getElementById('choice').style.display = 'none';
+      if (data.status === 'ok') {
+        document.getElementById('result').textContent =
+          `All set as "${data.name}" — you can close this page.`;
+      } else {
+        document.getElementById('result').textContent = 'Error: ' + (data.error || 'unknown');
+      }
+    }
+  </script>
+</body>
+</html>

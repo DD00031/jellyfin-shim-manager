@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jellyfin-shim-manager"
+version = "0.1.0"
+description = "Manage multi-user jellyfin-mpv-shim instances on a shared/headless Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "flask>=2.0",
+]
+
+[project.scripts]
+jellyfin-shim-manager = "jellyfin_shim_manager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+jellyfin_shim_manager = ["templates/*.html", "assets/*.png"]
