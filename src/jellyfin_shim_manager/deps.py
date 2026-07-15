@@ -7,7 +7,6 @@ console status screen).
 
 import shutil
 import subprocess
-import sys
 
 APT_PACKAGES = {
     "mpv": "mpv",
@@ -43,9 +42,11 @@ def install_apt_package(pkg: str):
 def install_jellyfin_mpv_shim():
     # Installed system-wide via pip (not pipx), so the systemd services --
     # which run as run_as_user, not whoever ran `pipx install` -- can find
-    # it on the default PATH without extra configuration.
+    # it on the default PATH without extra configuration. Needs sudo: a
+    # system-wide --break-system-packages install writes to system
+    # site-packages, which a non-root user can't do.
     subprocess.run(
-        ["python3", "-m", "pip", "install", "--break-system-packages", "--upgrade", "jellyfin-mpv-shim"],
+        ["sudo", "python3", "-m", "pip", "install", "--break-system-packages", "--upgrade", "jellyfin-mpv-shim"],
         check=True,
     )
 

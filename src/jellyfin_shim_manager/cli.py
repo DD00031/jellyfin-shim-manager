@@ -24,12 +24,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import auth
 from . import config as cfgmod
 from . import deps
 from . import instances as inst
 from . import monitor as monitor_mod
+from . import privileged
 from . import reap as reap_mod
 from . import systemd
 from . import web as web_mod
@@ -121,19 +123,25 @@ def cmd_reap(cfg: dict, args):
 
 def cmd_setup(cfg: dict, args):
     path = cfgmod.config_path()
+    interactive = sys.stdin.isatty() and not args.non_interactive
+
     if not path.exists() or args.reset_config:
-        overrides = {}
-        if args.run_as_user:
-            overrides["run_as_user"] = args.run_as_user
-        if args.config_base:
-            overrides["config_base"] = args.config_base
-        if args.jellyfin_url:
-            overrides["jellyfin_url"] = args.jellyfin_url
+        overrides = _gather_setup_overrides(args, interactive)
         cfgmod.write_default_config(path, overrides)
         print(f"Wrote config to {path}")
         cfg = cfgmod.load_config()
+        if not cfg["jellyfin_url"]:
+            print(
+                "WARNING: no Jellyfin server URL was set. Logins won't work until you set "
+                f"\"jellyfin_url\" in {path}.",
+                file=sys.stderr,
+            )
     else:
         print(f"Config already exists at {path} (use --reset-config to overwrite)")
+
+    print(f"Services will run as user '{cfg['run_as_user']}'.")
+    privileged.ensure_owned_dir(cfg["config_base"], cfg["run_as_user"])
+    privileged.ensure_owned_dir(cfg["image_dir"], cfg["run_as_user"])
 
     _install_default_images(cfg)
 
@@ -144,10 +152,10 @@ def cmd_setup(cfg: dict, args):
         cert, key = systemd.generate_self_signed_cert(cfg)
         cfgmod.write_default_config(path, {**cfg, "tls_enabled": True, "tls_cert": str(cert), "tls_key": str(key)})
         cfg = cfgmod.load_config()
-        print(f"Generated a self-signed TLS cert at {cert} and enabled TLS in the config.")
+        print(f"Generated a self-signed TLS cert at {cert} (owned by '{cfg['run_as_user']}') and enabled TLS.")
 
-    auth.load_or_create_secret_key()
-    if not sys.stdin.isatty():
+    auth.load_or_create_secret_key(owner=cfg["run_as_user"])
+    if not interactive:
         if not auth.admin_configured():
             print()
             print("No interactive terminal -- skipping admin account setup.")
@@ -155,9 +163,9 @@ def cmd_setup(cfg: dict, args):
     elif not auth.admin_configured():
         print()
         print("No admin account exists yet -- set one up now for the /admin panel.")
-        _prompt_set_admin_password()
+        _prompt_set_admin_password(owner=cfg["run_as_user"])
     elif args.reset_admin_password:
-        _prompt_set_admin_password()
+        _prompt_set_admin_password(owner=cfg["run_as_user"])
 
     systemd.install_sudoers_rule(cfg)
     print(f"Installed sudoers rule at {systemd.SUDOERS_PATH}")
@@ -168,11 +176,47 @@ def cmd_setup(cfg: dict, args):
     print(f"  - {systemd.JOIN_UNIT}")
     print(f"  - {systemd.REAPER_SERVICE_UNIT} / {systemd.REAPER_TIMER_UNIT}")
     print()
-    print(f"Edit {path} to set your Jellyfin server URL, LAN IP, image directory, etc.,")
-    print("then re-run `jellyfin-shim-manager setup` (or just restart the join service).")
+    print(f"Config is at {path} -- edit it any time, then re-run `jellyfin-shim-manager setup`")
+    print("(or just restart the join service) to pick up changes.")
 
 
-def _prompt_set_admin_password():
+def _gather_setup_overrides(args, interactive: bool) -> dict:
+    defaults = cfgmod.DEFAULTS
+
+    run_as_user = args.run_as_user
+    if not run_as_user and interactive:
+        run_as_user = input(f"Linux user the shim services should run as [{defaults['run_as_user']}]: ").strip()
+    run_as_user = run_as_user or defaults["run_as_user"]
+
+    home = cfgmod.home_dir_for(run_as_user)
+    default_config_base = str(home / "mpv-shim-configs")
+    default_image_dir = str(home / "Resources")
+
+    config_base = args.config_base
+    if not config_base and interactive:
+        config_base = input(f"Directory to store per-user shim configs [{default_config_base}]: ").strip()
+    config_base = config_base or default_config_base
+
+    jellyfin_url = args.jellyfin_url
+    if not jellyfin_url and interactive:
+        jellyfin_url = input("Jellyfin server URL (e.g. http://192.168.1.10:8096): ").strip()
+    jellyfin_url = jellyfin_url or defaults["jellyfin_url"]
+
+    parsed = urlparse(jellyfin_url) if jellyfin_url else None
+    local_ip = args.local_ip or (parsed.hostname if parsed else None) or defaults["local_ip"]
+    jellyfin_port = (parsed.port if parsed and parsed.port else None) or defaults["jellyfin_port"]
+
+    return {
+        "run_as_user": run_as_user,
+        "config_base": config_base,
+        "jellyfin_url": jellyfin_url,
+        "local_ip": local_ip,
+        "jellyfin_port": jellyfin_port,
+        "image_dir": default_image_dir,
+    }
+
+
+def _prompt_set_admin_password(owner: str = None):
     username = input("Admin username [admin]: ").strip() or "admin"
     while True:
         password = getpass.getpass("Admin password: ")
@@ -184,13 +228,13 @@ def _prompt_set_admin_password():
             print("Passwords didn't match, try again.")
             continue
         break
-    auth.set_admin_password(username, password)
+    auth.set_admin_password(username, password, owner=owner)
     print(f"Admin account '{username}' saved to {cfgmod.ADMIN_CREDENTIALS_PATH}")
 
 
 def cmd_admin(cfg: dict, args):
     if args.action == "set-password":
-        _prompt_set_admin_password()
+        _prompt_set_admin_password(owner=cfg["run_as_user"])
 
 
 def _ensure_required_deps():
@@ -357,13 +401,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser("setup", help="install systemd units, sudoers rule, and config file")
     p_setup.add_argument("--reset-config", action="store_true", help="overwrite an existing config file")
-    p_setup.add_argument("--run-as-user", help="linux user the shim services run as (default: pi)")
-    p_setup.add_argument("--config-base", help="directory to store per-user shim configs")
+    p_setup.add_argument(
+        "--run-as-user",
+        help="linux user the shim services run as (default: whoever invoked this, or $SUDO_USER under sudo)",
+    )
+    p_setup.add_argument("--config-base", help="directory to store per-user shim configs (default: <their home>/mpv-shim-configs)")
     p_setup.add_argument("--jellyfin-url", help="Jellyfin server URL, e.g. http://192.168.1.10:8096")
+    p_setup.add_argument("--local-ip", help="LAN IP `monitor` health-checks (default: parsed from --jellyfin-url)")
     p_setup.add_argument("--no-enable", action="store_true", help="install units without enabling/starting them")
     p_setup.add_argument("--tls", action="store_true", help="generate a self-signed cert and enable TLS for the web app")
     p_setup.add_argument("--reset-admin-password", action="store_true", help="prompt to set a new admin password even if one exists")
     p_setup.add_argument("--skip-deps", action="store_true", help="don't check/install mpv and jellyfin-mpv-shim")
+    p_setup.add_argument(
+        "--non-interactive", action="store_true",
+        help="never prompt, even if a terminal is attached (use --run-as-user/--jellyfin-url/etc. instead)",
+    )
     p_setup.set_defaults(func=cmd_setup)
 
     p_config = sub.add_parser("config", help="show or initialize the config file")

@@ -2,34 +2,31 @@
 login_required / CSRF helpers used by the admin panel routes in web.py.
 
 Admin credentials and the session secret key are kept out of config.json
-(which may be more widely readable) in their own 0600 files.
+(which may be more widely readable) in their own 0600 files, owned by
+run_as_user -- the account the join/admin systemd service actually runs as,
+which is what needs to read them back at request time.
 """
 
 import functools
 import json
-import os
 import secrets
 
 from flask import redirect, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import config as cfgmod
-
-
-def _write_private_file(path, content: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(content)
+from . import privileged
 
 
 def admin_configured() -> bool:
     return cfgmod.ADMIN_CREDENTIALS_PATH.exists()
 
 
-def set_admin_password(username: str, password: str):
+def set_admin_password(username: str, password: str, owner: str = None):
     data = {"username": username, "password_hash": generate_password_hash(password)}
-    _write_private_file(cfgmod.ADMIN_CREDENTIALS_PATH, json.dumps(data, indent=2) + "\n")
+    privileged.write_file(
+        cfgmod.ADMIN_CREDENTIALS_PATH, json.dumps(data, indent=2) + "\n", mode=0o600, owner=owner
+    )
 
 
 def verify_admin(username: str, password: str) -> bool:
@@ -41,12 +38,12 @@ def verify_admin(username: str, password: str) -> bool:
     return check_password_hash(data.get("password_hash", ""), password)
 
 
-def load_or_create_secret_key() -> str:
+def load_or_create_secret_key(owner: str = None) -> str:
     path = cfgmod.SECRET_KEY_PATH
     if path.exists():
         return path.read_text().strip()
     key = secrets.token_hex(32)
-    _write_private_file(path, key + "\n")
+    privileged.write_file(path, key + "\n", mode=0o600, owner=owner)
     return key
 
 

@@ -77,7 +77,7 @@ def create_app(cfg: dict) -> Flask:
         static_folder=str(STATIC_DIR),
         static_url_path="/static",
     )
-    app.secret_key = auth.load_or_create_secret_key()
+    app.secret_key = auth.load_or_create_secret_key(owner=cfg.get("run_as_user"))
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",

@@ -72,9 +72,32 @@ pipx install git+https://github.com/DD00031/jellyfin-shim-manager.git
 jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
 ```
 
-`setup`:
-- writes `/etc/jellyfin-shim-manager/config.json` (if it doesn't already
-  exist),
+`setup` doesn't need to be run as root or as any particular user — it shells
+out to `sudo` itself for the handful of steps that need it (writing under
+`/etc`, installing systemd units, apt/pip installs), the same way `sudo apt
+install` does. Just run it as yourself.
+
+If a terminal is attached and no config exists yet, `setup` asks a few
+questions (skip a prompt to accept the default shown in `[brackets]`):
+
+```
+Linux user the shim services should run as [rvdk]:
+Directory to store per-user shim configs [/home/rvdk/mpv-shim-configs]:
+Jellyfin server URL (e.g. http://192.168.1.10:8096): http://192.168.1.10:8096
+No admin account exists yet -- set one up now for the /admin panel.
+Admin username [admin]:
+Admin password:
+Confirm password:
+```
+
+The "run as" user defaults to whoever is actually running the command (or
+`$SUDO_USER` if invoked with `sudo`) — **not** a hardcoded `pi` — and
+`config_base`/`image_dir` default to that user's real home directory. Pass
+`--run-as-user`/`--config-base`/`--jellyfin-url`/`--local-ip` to set any of
+these non-interactively (useful for scripted installs — add
+`--non-interactive` to also suppress the admin-password prompt).
+
+`setup` also:
 - checks for `mpv` and `jellyfin-mpv-shim` and installs them (via `apt` and
   `pip install --break-system-packages` respectively) if missing — same as
   running `jellyfin-shim-manager deps --install --required-only`,
@@ -82,10 +105,12 @@ jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
   `jellyfin-shim-manager-join` and `jellyfin-shim-manager-reaper` units,
 - adds a sudoers rule so the web app and reaper can start/stop/enable/disable
   `jellyfin-mpv-shim@*` services without running as root,
-- prompts you to set the initial `/admin` username and password (stored
-  hashed, in `/etc/jellyfin-shim-manager/admin.json`, mode 0600),
 - with `--tls`, generates a self-signed cert (`openssl`) and turns on HTTPS
   for the web app.
+
+Admin credentials, the session secret key, and the TLS key are all written
+owned by the "run as" user (mode 0600) — that's the account the join/admin
+service actually runs as, so it's the one that needs to read them back.
 
 Optional tools aren't installed automatically — run `jellyfin-shim-manager
 deps --install` to also grab `openssl` (for `--tls`), `qrencode` (for
@@ -97,8 +122,8 @@ Edit `/etc/jellyfin-shim-manager/config.json`:
 
 ```jsonc
 {
-  "config_base": "/home/pi/mpv-shim-configs",  // per-user shim configs live here
-  "run_as_user": "pi",                          // linux user the shim services run as
+  "config_base": "/home/<run_as_user>/mpv-shim-configs",  // per-user shim configs live here
+  "run_as_user": "<run_as_user>",               // linux user the shim services run as
   "service_prefix": "jellyfin-mpv-shim@",
   "jellyfin_url": "http://192.168.1.10:8096",   // your Jellyfin server
   "jellyfin_port": 8096,
@@ -110,10 +135,13 @@ Edit `/etc/jellyfin-shim-manager/config.json`:
   "tls_enabled": false,
   "tls_cert": "/etc/jellyfin-shim-manager/tls/cert.pem",
   "tls_key": "/etc/jellyfin-shim-manager/tls/key.pem",
-  "image_dir": "/home/pi/Resources",            // status screen images
+  "image_dir": "/home/<run_as_user>/Resources", // status screen images
   "temporary_timeout_seconds": 10800            // 3h idle timeout for guest logins
 }
 ```
+
+(`<run_as_user>` above is whatever `setup` resolved `run_as_user` to — check
+with `jellyfin-shim-manager config`.)
 
 Admin credentials and the Flask session secret key live outside this file
 (in `/etc/jellyfin-shim-manager/admin.json` and `.../secret_key`, both mode
@@ -190,11 +218,12 @@ jellyfin-shim-manager uninstall [--purge-instances] [--purge-config] [-y]
    journalctl -u jellyfin-mpv-shim@<user> -f
    ```
 2. **Status screen images.** `setup` copies placeholder PNGs into `image_dir`
-   for `no_jellyfin` / `no_internet` / `no_server` / `playing` states — swap
-   in your own. The `idle` state expects `join-qr.png`, a static QR code
-   pointing at `http://<local_ip>:<bind_port>/join`, e.g.:
+   (check the path with `jellyfin-shim-manager config`) for `no_jellyfin` /
+   `no_internet` / `no_server` / `playing` states — swap in your own. The
+   `idle` state expects `join-qr.png`, a static QR code pointing at
+   `http://<local_ip>:<bind_port>/join`, e.g.:
    ```
-   qrencode -o /home/pi/Resources/join-qr.png -s 10 "http://192.168.1.10:5005/join"
+   qrencode -o /home/<run_as_user>/Resources/join-qr.png -s 10 "http://192.168.1.10:5005/join"
    ```
 
 ## Notes

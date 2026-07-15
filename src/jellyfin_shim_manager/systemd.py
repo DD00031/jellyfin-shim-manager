@@ -9,7 +9,10 @@ Three kinds of units are involved:
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
+
+from . import privileged
 
 SYSTEMD_DIR = Path("/etc/systemd/system")
 SUDOERS_PATH = Path("/etc/sudoers.d/jellyfin-shim-manager")
@@ -126,36 +129,47 @@ def generate_self_signed_cert(cfg: dict, days: int = 825):
     """Generates a self-signed TLS cert/key for the join/admin web app.
 
     A self-signed cert still gets you an encrypted connection (browsers just
-    won't trust it by default) -- good enough for a LAN-only tool.
+    won't trust it by default) -- good enough for a LAN-only tool. Generated
+    in a scratch dir first (openssl needs somewhere it can write directly),
+    then installed to /etc with `sudo`, owned by run_as_user since that's the
+    account the web app -- which needs to read its own key -- runs as.
     """
     from . import config as cfgmod
 
-    cfgmod.TLS_DIR.mkdir(parents=True, exist_ok=True)
     cert_path = Path(cfg.get("tls_cert") or cfgmod.TLS_DIR / "cert.pem")
     key_path = Path(cfg.get("tls_key") or cfgmod.TLS_DIR / "key.pem")
 
-    subprocess.run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048",
-            "-nodes", "-days", str(days),
-            "-keyout", str(key_path),
-            "-out", str(cert_path),
-            "-subj", "/CN=jellyfin-shim-manager",
-        ],
-        check=True,
-    )
-    key_path.chmod(0o600)
+    with tempfile.TemporaryDirectory(prefix="jellyfin-shim-manager-tls-") as tmp:
+        tmp_key = Path(tmp) / "key.pem"
+        tmp_cert = Path(tmp) / "cert.pem"
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-nodes", "-days", str(days),
+                "-keyout", str(tmp_key),
+                "-out", str(tmp_cert),
+                "-subj", "/CN=jellyfin-shim-manager",
+            ],
+            check=True,
+        )
+        owner = cfg.get("run_as_user")
+        privileged.write_bytes(key_path, tmp_key.read_bytes(), mode=0o600, owner=owner)
+        privileged.write_bytes(cert_path, tmp_cert.read_bytes(), mode=0o644, owner=owner)
+
     return cert_path, key_path
 
 
 def install_sudoers_rule(cfg: dict, run_as_user: str = None):
     run_as_user = run_as_user or cfg["run_as_user"]
     content = _sudoers_rule(cfg, run_as_user)
-    tmp = Path("/tmp/jellyfin-shim-manager-sudoers")
-    tmp.write_text(content)
-    subprocess.run(["sudo", "visudo", "-cf", str(tmp)], check=True)
-    subprocess.run(["sudo", "install", "-m", "0440", str(tmp), str(SUDOERS_PATH)], check=True)
-    tmp.unlink(missing_ok=True)
+    with tempfile.NamedTemporaryFile("w", prefix="jellyfin-shim-manager-sudoers-", delete=False) as f:
+        f.write(content)
+        tmp = Path(f.name)
+    try:
+        subprocess.run(["sudo", "visudo", "-cf", str(tmp)], check=True)
+        privileged.write_file(SUDOERS_PATH, content, mode=0o440)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _remove_unit(unit_name: str):
@@ -182,7 +196,4 @@ def remove_sudoers_rule():
 
 
 def _write_unit(path: Path, content: str):
-    tmp = Path(f"/tmp/{path.name}")
-    tmp.write_text(content)
-    subprocess.run(["sudo", "install", "-m", "0644", str(tmp), str(path)], check=True)
-    tmp.unlink(missing_ok=True)
+    privileged.write_file(path, content, mode=0o644)
