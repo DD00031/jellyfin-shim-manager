@@ -117,6 +117,32 @@ def install_manager_units(cfg: dict, exe: str = None, enable: bool = True):
         subprocess.run(["sudo", "systemctl", "enable", "--now", JOIN_UNIT], check=True)
 
 
+def generate_self_signed_cert(cfg: dict, days: int = 825):
+    """Generates a self-signed TLS cert/key for the join/admin web app.
+
+    A self-signed cert still gets you an encrypted connection (browsers just
+    won't trust it by default) -- good enough for a LAN-only tool.
+    """
+    from . import config as cfgmod
+
+    cfgmod.TLS_DIR.mkdir(parents=True, exist_ok=True)
+    cert_path = Path(cfg.get("tls_cert") or cfgmod.TLS_DIR / "cert.pem")
+    key_path = Path(cfg.get("tls_key") or cfgmod.TLS_DIR / "key.pem")
+
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-nodes", "-days", str(days),
+            "-keyout", str(key_path),
+            "-out", str(cert_path),
+            "-subj", "/CN=jellyfin-shim-manager",
+        ],
+        check=True,
+    )
+    key_path.chmod(0o600)
+    return cert_path, key_path
+
+
 def install_sudoers_rule(cfg: dict, run_as_user: str = None):
     run_as_user = run_as_user or cfg["run_as_user"]
     content = _sudoers_rule(cfg, run_as_user)

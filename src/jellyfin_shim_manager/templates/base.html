@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}jellyfin-shim-manager{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <div class="brand"><span class="dot"></span> jellyfin-shim-manager</div>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+    </div>
+    <main class="{% block main_class %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+    <footer>jellyfin-shim-manager</footer>
+  </div>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

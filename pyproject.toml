@@ -20,4 +20,4 @@ jellyfin-shim-manager = "jellyfin_shim_manager.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-jellyfin_shim_manager = ["templates/*.html", "assets/*.png"]
+jellyfin_shim_manager = ["templates/*.html", "assets/*.png", "static/*.css", "static/*.js"]

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Admin sign in — jellyfin-shim-manager{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Admin sign in</h1>
+  <p class="subtitle">Manage instances, logins, and cleanup.</p>
+
+  {% if error %}
+  <div class="flash error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+
+    <button type="submit" class="btn-primary">Sign in</button>
+  </form>
+</div>
+{% endblock %}

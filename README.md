@@ -2,25 +2,51 @@
 
 A single CLI to manage multiple [jellyfin-mpv-shim](https://github.com/jellyfin/jellyfin-mpv-shim)
 instances on one shared, headless box (e.g. a Raspberry Pi hooked up to a TV).
-Each user gets their own systemd-managed shim instance, login state, and
-optional auto-expiring "guest" login — all driven from one `jellyfin-shim-manager`
-command.
+Each user gets their own systemd-managed shim instance and login state, with
+a clean web UI for both onboarding and admin control.
 
 ## What it does
 
 - **`jellyfin-shim-manager add/remove/list`** — CLI-driven per-user instance
   management, each running as its own `jellyfin-mpv-shim@<user>` systemd
   service.
-- **`jellyfin-shim-manager join`** — a small local web app: scan a QR code,
-  log in with Jellyfin Quick Connect, and choose "permanent" (this is my TV
-  too) or "temporary" (just watching now, auto-expires after inactivity).
+- **`jellyfin-shim-manager join`** — serves two web pages on one port:
+  - `/join` — a clean sign-in page where a new user enters their normal
+    Jellyfin username and password, then picks "permanent" (this is my TV
+    too) or "temporary" (just watching now, auto-expires after inactivity).
+  - `/admin` — a session-authenticated dashboard to view, start/stop, add,
+    and remove instances, and trigger a manual reap.
+  Both share a light/dark theme toggle and a purple accent matching
+  Jellyfin's brand color.
 - **`jellyfin-shim-manager reap`** — disables and deletes temporary instances
   that have been idle too long. Meant to run on a timer.
 - **`jellyfin-shim-manager monitor`** — drives a framebuffer status screen
   (via `fbi`) showing whether Jellyfin/the network/a stream is up, for a
   TV-connected Pi with no monitor attached to it otherwise.
 - **`jellyfin-shim-manager setup`** — installs the systemd units, a narrowly
-  scoped sudoers rule, and a default config file in one shot.
+  scoped sudoers rule, a default config file, and (interactively) your first
+  admin account, in one shot.
+
+### How login actually works
+
+`jellyfin-mpv-shim` has no Quick Connect CLI flag — its `--server`,
+`--username`, and `--password` flags feed the `add` subcommand, which stores
+credentials non-interactively:
+
+```
+jellyfin-mpv-shim --config <dir> --no-gui --server <url> --username <user> --password <pass> add
+```
+
+So `/join` (and `jellyfin-shim-manager add`) collect a username+password and
+run that synchronously — no code, no polling, just a few seconds and either
+a saved login or an error. The systemd-managed instance is then started
+using just `--config <dir>`.
+
+**Known limitation:** the password is briefly visible to other local
+processes via `ps` while that command runs — this is a constraint of the
+upstream `jellyfin-mpv-shim` CLI, not something this tool can work around.
+Use TLS (below) so it's at least encrypted in transit, and treat this as a
+LAN-only tool.
 
 ## Install
 
@@ -33,16 +59,22 @@ curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/
 Or manually:
 
 ```bash
-sudo apt install -y git python3 python3-pip python3-venv jq qrencode
+sudo apt install -y git python3 python3-pip python3-venv jq qrencode openssl
 pipx install git+https://github.com/DD00031/jellyfin-shim-manager.git
-jellyfin-shim-manager setup
+jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
 ```
 
-`setup` writes `/etc/jellyfin-shim-manager/config.json` (if it doesn't already
-exist), installs the `jellyfin-mpv-shim@.service` template unit plus the
-`jellyfin-shim-manager-join` and `jellyfin-shim-manager-reaper` units, and
-adds a sudoers rule so the join app and reaper can start/stop/enable/disable
-`jellyfin-mpv-shim@*` services without running as root.
+`setup`:
+- writes `/etc/jellyfin-shim-manager/config.json` (if it doesn't already
+  exist),
+- installs the `jellyfin-mpv-shim@.service` template unit plus the
+  `jellyfin-shim-manager-join` and `jellyfin-shim-manager-reaper` units,
+- adds a sudoers rule so the web app and reaper can start/stop/enable/disable
+  `jellyfin-mpv-shim@*` services without running as root,
+- prompts you to set the initial `/admin` username and password (stored
+  hashed, in `/etc/jellyfin-shim-manager/admin.json`, mode 0600),
+- with `--tls`, generates a self-signed cert (`openssl`) and turns on HTTPS
+  for the web app.
 
 ## Configure
 
@@ -57,14 +89,22 @@ Edit `/etc/jellyfin-shim-manager/config.json`:
   "jellyfin_port": 8096,
   "local_ip": "192.168.1.10",                   // match jellyfin_url's host
   "tailscale_ip": "",                           // optional fallback address
-  "bind_host": "0.0.0.0",                       // join web app bind address
+  "bind_host": "0.0.0.0",                       // web app bind address
   "bind_port": 5005,
+  "login_timeout_seconds": 45,
+  "tls_enabled": false,
+  "tls_cert": "/etc/jellyfin-shim-manager/tls/cert.pem",
+  "tls_key": "/etc/jellyfin-shim-manager/tls/key.pem",
   "image_dir": "/home/pi/Resources",            // status screen images
   "temporary_timeout_seconds": 10800            // 3h idle timeout for guest logins
 }
 ```
 
-After editing, restart the join service so it picks up the change:
+Admin credentials and the Flask session secret key live outside this file
+(in `/etc/jellyfin-shim-manager/admin.json` and `.../secret_key`, both mode
+0600) since they're secrets, not settings.
+
+After editing, restart the web app so it picks up the change:
 
 ```bash
 sudo systemctl restart jellyfin-shim-manager-join
@@ -73,35 +113,32 @@ sudo systemctl restart jellyfin-shim-manager-join
 ## Usage
 
 ```bash
-jellyfin-shim-manager add alice          # interactive Jellyfin login, enables the service
-jellyfin-shim-manager list               # show every instance + status
-jellyfin-shim-manager remove alice       # stop, disable, optionally delete config
-jellyfin-shim-manager join               # run the QR onboarding page in the foreground
-jellyfin-shim-manager reap               # manually run the temporary-login sweep
-jellyfin-shim-manager reap --dry-run     # see what reap would do without doing it
-jellyfin-shim-manager monitor            # run the status-screen loop in the foreground
-jellyfin-shim-manager config             # print the effective config
+jellyfin-shim-manager add alice              # prompts for a password, enables the service
+jellyfin-shim-manager list                   # show every instance + status
+jellyfin-shim-manager remove alice           # stop, disable, optionally delete config
+jellyfin-shim-manager join                   # run the join+admin web app in the foreground
+jellyfin-shim-manager admin set-password     # (re)set the /admin login
+jellyfin-shim-manager reap                   # manually run the temporary-login sweep
+jellyfin-shim-manager reap --dry-run         # see what reap would do without doing it
+jellyfin-shim-manager monitor                # run the status-screen loop in the foreground
+jellyfin-shim-manager config                 # print the effective config
 ```
 
-In normal operation the `join` and `reaper` units run as services/timers (via
-`setup`), and you mostly just use `add`/`remove`/`list`. `monitor` is meant to
-be launched from an autologin `.bash_profile`/`.xinitrc` on the Pi's local
+In normal operation the `join` (which also serves `/admin`) and `reaper`
+units run as services/timers (via `setup`), and you mostly just use the web
+UI plus `add`/`remove`/`list` for anything scripted. `monitor` is meant to be
+launched from an autologin `.bash_profile`/`.xinitrc` on the Pi's local
 console, since it drives the physical framebuffer.
 
 ## Things to verify for your setup
 
-1. **Quick Connect code format.** `code_regex` in the config assumes a bare
-   6-digit code. Run once by hand and check the log if unsure:
-   ```
-   jellyfin-mpv-shim --config /tmp/qc-test --quick-connect --server http://<ip>:8096
-   ```
-2. **Playback log lines.** `monitor` looks for `playMedia` and
+1. **Playback log lines.** `monitor` looks for `playMedia` and
    `Sessions/Playing/Stopped` in `journalctl` output for a given
    `jellyfin-mpv-shim@<user>` unit to detect activity. Confirm with:
    ```
    journalctl -u jellyfin-mpv-shim@<user> -f
    ```
-3. **Status screen images.** `setup` copies placeholder PNGs into `image_dir`
+2. **Status screen images.** `setup` copies placeholder PNGs into `image_dir`
    for `no_jellyfin` / `no_internet` / `no_server` / `playing` states — swap
    in your own. The `idle` state expects `join-qr.png`, a static QR code
    pointing at `http://<local_ip>:<bind_port>/join`, e.g.:
@@ -111,7 +148,7 @@ console, since it drives the physical framebuffer.
 
 ## Notes
 
-- The join app uses Flask's built-in dev server, which is fine for a LAN-only
+- The web app uses Flask's built-in dev server, which is fine for a LAN-only
   tool like this but isn't hardened for anything beyond that.
 - `reap` only prunes `temporary` instances; anything without a `meta.json`
   (e.g. an instance added by hand outside this tool) is left alone.

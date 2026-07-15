@@ -5,20 +5,22 @@ Subcommands:
   add <user>       interactively log in a new permanent instance and enable it
   remove <user>     stop, disable, and optionally delete an instance
   list              show all configured instances and their status
-  join              run the QR-code onboarding web app
+  join              run the join (onboarding) + admin web app
   monitor           run the framebuffer status screen loop
   reap              disable+delete expired temporary instances (for the timer)
   setup             install systemd units, sudoers rule, and config file
   config            show or initialize the config file
+  admin             manage the admin panel account
 """
 
 import argparse
+import getpass
 import importlib.resources
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
+from . import auth
 from . import config as cfgmod
 from . import instances as inst
 from . import monitor as monitor_mod
@@ -44,14 +46,14 @@ def cmd_add(cfg: dict, args):
 
     config_dir.mkdir(parents=True, exist_ok=True)
     print()
-    print(f"Launching jellyfin-mpv-shim for '{user}' to log in.")
-    print("Enter the server URL and credentials (or use Quick Connect).")
-    print("Once it shows as connected, quit the app (press 'q' or Ctrl+C) to continue.")
-    print()
-    subprocess.run(["jellyfin-mpv-shim", "--config", str(config_dir)])
-
-    if not (config_dir / "conf.json").exists():
-        print("No conf.json was created -- login likely didn't complete. Aborting.", file=sys.stderr)
+    print(f"Logging in '{user}' against {cfg['jellyfin_url']}")
+    password = getpass.getpass("Jellyfin password: ")
+    print("Contacting the server...")
+    try:
+        inst.run_shim_login(config_dir, cfg["jellyfin_url"], user, password, timeout=cfg["login_timeout_seconds"])
+    except inst.ShimLoginError as exc:
+        print(str(exc), file=sys.stderr)
+        shutil.rmtree(config_dir, ignore_errors=True)
         sys.exit(1)
 
     # CLI-added users are always permanent; temporary ones only come from `join`.
@@ -125,6 +127,25 @@ def cmd_setup(cfg: dict, args):
 
     _install_default_images(cfg)
 
+    if args.tls:
+        cert, key = systemd.generate_self_signed_cert(cfg)
+        cfgmod.write_default_config(path, {**cfg, "tls_enabled": True, "tls_cert": str(cert), "tls_key": str(key)})
+        cfg = cfgmod.load_config()
+        print(f"Generated a self-signed TLS cert at {cert} and enabled TLS in the config.")
+
+    auth.load_or_create_secret_key()
+    if not sys.stdin.isatty():
+        if not auth.admin_configured():
+            print()
+            print("No interactive terminal -- skipping admin account setup.")
+            print("Run `jellyfin-shim-manager admin set-password` once you have a terminal.")
+    elif not auth.admin_configured():
+        print()
+        print("No admin account exists yet -- set one up now for the /admin panel.")
+        _prompt_set_admin_password()
+    elif args.reset_admin_password:
+        _prompt_set_admin_password()
+
     systemd.install_sudoers_rule(cfg)
     print(f"Installed sudoers rule at {systemd.SUDOERS_PATH}")
 
@@ -136,6 +157,27 @@ def cmd_setup(cfg: dict, args):
     print()
     print(f"Edit {path} to set your Jellyfin server URL, LAN IP, image directory, etc.,")
     print("then re-run `jellyfin-shim-manager setup` (or just restart the join service).")
+
+
+def _prompt_set_admin_password():
+    username = input("Admin username [admin]: ").strip() or "admin"
+    while True:
+        password = getpass.getpass("Admin password: ")
+        confirm = getpass.getpass("Confirm password: ")
+        if not password:
+            print("Password cannot be empty.")
+            continue
+        if password != confirm:
+            print("Passwords didn't match, try again.")
+            continue
+        break
+    auth.set_admin_password(username, password)
+    print(f"Admin account '{username}' saved to {cfgmod.ADMIN_CREDENTIALS_PATH}")
+
+
+def cmd_admin(cfg: dict, args):
+    if args.action == "set-password":
+        _prompt_set_admin_password()
 
 
 def _install_default_images(cfg: dict):
@@ -184,7 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="list configured instances and their status")
     p_list.set_defaults(func=cmd_list)
 
-    p_join = sub.add_parser("join", help="run the QR-code onboarding web app")
+    p_join = sub.add_parser("join", help="run the join (onboarding) + admin web app")
     p_join.set_defaults(func=cmd_join)
 
     p_monitor = sub.add_parser("monitor", help="run the framebuffer status screen loop")
@@ -200,11 +242,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--config-base", help="directory to store per-user shim configs")
     p_setup.add_argument("--jellyfin-url", help="Jellyfin server URL, e.g. http://192.168.1.10:8096")
     p_setup.add_argument("--no-enable", action="store_true", help="install units without enabling/starting them")
+    p_setup.add_argument("--tls", action="store_true", help="generate a self-signed cert and enable TLS for the web app")
+    p_setup.add_argument("--reset-admin-password", action="store_true", help="prompt to set a new admin password even if one exists")
     p_setup.set_defaults(func=cmd_setup)
 
     p_config = sub.add_parser("config", help="show or initialize the config file")
     p_config.add_argument("--init", action="store_true", help="write out the default config file")
     p_config.set_defaults(func=cmd_config)
+
+    p_admin = sub.add_parser("admin", help="manage the admin panel account")
+    p_admin.add_argument("action", choices=["set-password"])
+    p_admin.set_defaults(func=cmd_admin)
 
     return parser
 

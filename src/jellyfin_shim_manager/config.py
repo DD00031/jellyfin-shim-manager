@@ -13,6 +13,19 @@ DEFAULT_CONFIG_PATH = Path(
     os.environ.get("JELLYFIN_SHIM_MANAGER_CONFIG", "/etc/jellyfin-shim-manager/config.json")
 )
 
+# Kept outside config.json (and out of version control / group-readable
+# files) since they're secrets, not settings: /etc/jellyfin-shim-manager/admin.json
+# (admin username + password hash) and .../secret_key (Flask session signing key).
+ADMIN_CREDENTIALS_PATH = Path(
+    os.environ.get("JELLYFIN_SHIM_MANAGER_ADMIN_FILE", "/etc/jellyfin-shim-manager/admin.json")
+)
+SECRET_KEY_PATH = Path(
+    os.environ.get("JELLYFIN_SHIM_MANAGER_SECRET_KEY_FILE", "/etc/jellyfin-shim-manager/secret_key")
+)
+TLS_DIR = Path(
+    os.environ.get("JELLYFIN_SHIM_MANAGER_TLS_DIR", "/etc/jellyfin-shim-manager/tls")
+)
+
 DEFAULTS = {
     # Where each user's conf.json / cred.json / meta.json lives.
     "config_base": "/home/pi/mpv-shim-configs",
@@ -26,11 +39,13 @@ DEFAULTS = {
     "jellyfin_port": 8096,
     "local_ip": "192.168.2.14",
     "tailscale_ip": "",
-    # Join web app.
+    # Join + admin web app.
     "bind_host": "0.0.0.0",
     "bind_port": 5005,
-    "pending_timeout_seconds": 600,
-    "code_regex": r"\b(\d{6})\b",
+    "login_timeout_seconds": 45,
+    "tls_enabled": False,
+    "tls_cert": str(TLS_DIR / "cert.pem"),
+    "tls_key": str(TLS_DIR / "key.pem"),
     # Status monitor (Pi framebuffer screen).
     "image_dir": "/home/pi/Resources",
     "monitor_poll_seconds": 10,

@@ -17,6 +17,50 @@ class SystemctlError(RuntimeError):
     pass
 
 
+class ShimLoginError(RuntimeError):
+    """Raised when a non-interactive `jellyfin-mpv-shim ... add` fails."""
+
+
+def run_shim_login(config_dir: Path, server_url: str, username: str, password: str, timeout: int = 45):
+    """Stores Jellyfin credentials in config_dir via `jellyfin-mpv-shim add`.
+
+    jellyfin-mpv-shim's --server/--username/--password flags only apply to
+    the `add` positional command; they store credentials non-interactively
+    instead of prompting. The long-running shim process is started
+    separately afterwards using just --config.
+
+    NOTE: the password is briefly visible to other local processes via `ps`
+    while this subprocess is running -- that's a limitation of the upstream
+    CLI, not something we can avoid short of patching it.
+
+    Raises ShimLoginError with a user-facing message on failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "jellyfin-mpv-shim",
+                "--config", str(config_dir),
+                "--no-gui",
+                "--server", server_url,
+                "--username", username,
+                "--password", password,
+                "add",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ShimLoginError("Timed out contacting the Jellyfin server.") from exc
+    except FileNotFoundError as exc:
+        raise ShimLoginError("jellyfin-mpv-shim is not installed or not on PATH.") from exc
+
+    if not (config_dir / "conf.json").exists():
+        output = (result.stderr or result.stdout or "").strip()
+        hint = output.splitlines()[-1] if output else "login did not complete"
+        raise ShimLoginError(f"Login failed: {hint}")
+
+
 def run_systemctl(*args, check=True):
     try:
         subprocess.run(["sudo", "systemctl", *args], check=check)

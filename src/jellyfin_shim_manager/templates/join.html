@@ -1,80 +1,83 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connect to the TV</title>
-  <style>
-    body { font-family: sans-serif; text-align: center; padding: 2rem; background: #111; color: #eee; }
-    button { font-size: 1.2rem; padding: 0.8rem 1.5rem; margin: 0.5rem; border-radius: 8px; border: none; }
-    #code { font-size: 2.5rem; letter-spacing: 0.2rem; margin: 1.5rem 0; }
-    #choice, #code-box { display: none; }
-    input[type=text] { font-size: 1rem; padding: 0.5rem; }
-  </style>
-</head>
-<body>
+{% extends "base.html" %}
+{% block title %}Connect your Jellyfin account{% endblock %}
+{% block content %}
+<div class="card">
   <h1>Connect your Jellyfin account</h1>
-  <button id="start-btn">Connect account</button>
+  <p class="subtitle">Sign in with your normal Jellyfin username and password to set up playback on this device.</p>
 
-  <div id="code-box">
-    <p>Open Jellyfin on your phone (already signed in) &rarr; user menu &rarr; Quick Connect,
-       and enter this code:</p>
-    <div id="code">......</div>
-    <p id="waiting">Waiting for approval...</p>
-  </div>
+  <form id="join-form">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" required>
 
-  <div id="choice">
-    <p>Logged in! How should this login behave?</p>
-    <input type="text" id="name-input" placeholder="Optional name (e.g. alice)">
-    <br>
-    <button onclick="finish('permanent')">This is my TV too (permanent)</button>
-    <button onclick="finish('temporary')">Just watching now (temporary)</button>
-  </div>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
 
-  <p id="result"></p>
+    <label for="name">Display name <span style="font-weight:400;">(optional)</span></label>
+    <input type="text" id="name" name="name" placeholder="e.g. alice" autocomplete="off">
 
-  <script>
-    let sessionId = null;
-    let pollTimer = null;
+    <label>How should this login behave?</label>
+    <div class="radio-row">
+      <label class="radio-option">
+        <input type="radio" name="type" value="permanent" checked>
+        This is my TV too
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="type" value="temporary">
+        Just watching now
+      </label>
+    </div>
 
-    document.getElementById('start-btn').onclick = async () => {
-      document.getElementById('start-btn').style.display = 'none';
-      const res = await fetch('/join/start', { method: 'POST' });
-      const data = await res.json();
-      sessionId = data.id;
-      document.getElementById('code-box').style.display = 'block';
-      pollTimer = setInterval(poll, 2000);
+    <button type="submit" class="btn-primary" id="submit-btn">Connect</button>
+  </form>
+
+  <div class="status-msg" id="status-msg"></div>
+  <p class="hint">Temporary logins are removed automatically after a period of inactivity.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const form = document.getElementById('join-form');
+  const submitBtn = document.getElementById('submit-btn');
+  const statusMsg = document.getElementById('status-msg');
+
+  function showStatus(kind, text) {
+    statusMsg.className = 'status-msg visible ' + kind;
+    statusMsg.textContent = text;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Connecting…';
+    statusMsg.className = 'status-msg';
+
+    const body = {
+      username: document.getElementById('username').value,
+      password: document.getElementById('password').value,
+      name: document.getElementById('name').value,
+      type: form.querySelector('input[name="type"]:checked').value,
     };
 
-    async function poll() {
-      const res = await fetch(`/join/status/${sessionId}`);
-      const data = await res.json();
-      if (data.code) {
-        document.getElementById('code').textContent = data.code;
-      }
-      if (data.done) {
-        clearInterval(pollTimer);
-        document.getElementById('waiting').textContent = 'Approved!';
-        document.getElementById('choice').style.display = 'block';
-      }
-    }
-
-    async function finish(type) {
-      const name = document.getElementById('name-input').value;
-      const res = await fetch('/join/finish', {
+    try {
+      const res = await fetch('/api/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: sessionId, type: type, name: name })
+        body: JSON.stringify(body),
       });
       const data = await res.json();
-      document.getElementById('choice').style.display = 'none';
-      if (data.status === 'ok') {
-        document.getElementById('result').textContent =
-          `All set as "${data.name}" — you can close this page.`;
+      if (res.ok && data.status === 'ok') {
+        showStatus('success', `All set as "${data.name}" — you can close this page.`);
+        form.reset();
+        form.style.display = 'none';
       } else {
-        document.getElementById('result').textContent = 'Error: ' + (data.error || 'unknown');
+        showStatus('error', data.error || 'Something went wrong.');
       }
+    } catch (err) {
+      showStatus('error', 'Could not reach the server.');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Connect';
     }
-  </script>
-</body>
-</html>
+  });
+</script>
+{% endblock %}

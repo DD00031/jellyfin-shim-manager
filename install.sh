@@ -25,7 +25,7 @@ echo "==> Checking dependencies"
 if ! command -v git >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     echo "Installing git, python3, pip, jq, qrencode via apt..."
     sudo apt update
-    sudo apt install -y git python3 python3-pip python3-venv jq qrencode
+    sudo apt install -y git python3 python3-pip python3-venv jq qrencode openssl
 fi
 
 if ! command -v pipx >/dev/null 2>&1; then
@@ -56,7 +56,16 @@ fi
 
 if [[ "$RUN_SETUP" -eq 1 ]]; then
     echo "==> Running jellyfin-shim-manager setup (installs systemd units, sudoers rule, config)"
-    "$HOME/.local/bin/jellyfin-shim-manager" setup
+    # setup prompts for an admin password; when this script itself is piped in
+    # (curl | bash), stdin is the script source, not the terminal, so read
+    # setup's prompts from the tty directly if one exists. If not, setup
+    # detects the non-interactive stdin itself and just skips that prompt.
+    if [[ -r /dev/tty ]]; then
+        "$HOME/.local/bin/jellyfin-shim-manager" setup < /dev/tty
+    else
+        "$HOME/.local/bin/jellyfin-shim-manager" setup </dev/null
+        echo "Run 'jellyfin-shim-manager admin set-password' once you have a terminal to finish admin setup."
+    fi
 else
     echo "==> Skipping setup (--no-setup given). Run 'jellyfin-shim-manager setup' when ready."
 fi
