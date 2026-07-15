@@ -6,6 +6,7 @@ cred.json (written by jellyfin-mpv-shim itself) and meta.json (written by us:
 """
 
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -150,6 +151,13 @@ def recent_journal(cfg: dict, user: str, lines: int = 20) -> str:
         text=True,
     )
     return result.stdout
+
+
+def purge_all_instances(cfg: dict):
+    """Stops, disables, and deletes every configured instance. Used by `uninstall --purge-instances`."""
+    for user in list_instance_names(cfg):
+        run_systemctl("disable", "--now", unit_name(cfg, user), check=False)
+        shutil.rmtree(instance_dir(cfg, user), ignore_errors=True)
 
 
 def instance_playback_state(cfg: dict, user: str, lines: int = 200) -> str:

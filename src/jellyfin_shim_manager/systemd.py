@@ -21,6 +21,11 @@ REAPER_TIMER_UNIT = "jellyfin-shim-manager-reaper.timer"
 
 
 def _shim_template_unit(cfg: dict) -> str:
+    # Resolved at generation time rather than hardcoded: apt puts it at
+    # /usr/bin, `pip install --break-system-packages` typically puts it at
+    # /usr/local/bin. Falls back to the apt path if it isn't found at all
+    # (e.g. this is being generated before jellyfin-mpv-shim is installed).
+    shim_path = shutil.which("jellyfin-mpv-shim") or "/usr/bin/jellyfin-mpv-shim"
     return f"""[Unit]
 Description=Jellyfin MPV Shim (%i)
 After=network-online.target
@@ -30,7 +35,7 @@ Wants=network-online.target
 Type=simple
 User={cfg['run_as_user']}
 Environment=DISPLAY={cfg['display']}
-ExecStart=/usr/bin/jellyfin-mpv-shim --config {cfg['config_base']}/%i
+ExecStart={shim_path} --config {cfg['config_base']}/%i
 Restart=on-failure
 RestartSec=5
 
@@ -151,6 +156,29 @@ def install_sudoers_rule(cfg: dict, run_as_user: str = None):
     subprocess.run(["sudo", "visudo", "-cf", str(tmp)], check=True)
     subprocess.run(["sudo", "install", "-m", "0440", str(tmp), str(SUDOERS_PATH)], check=True)
     tmp.unlink(missing_ok=True)
+
+
+def _remove_unit(unit_name: str):
+    subprocess.run(["sudo", "systemctl", "disable", "--now", unit_name], check=False)
+    path = SYSTEMD_DIR / unit_name
+    subprocess.run(["sudo", "rm", "-f", str(path)], check=False)
+
+
+def uninstall_manager_units():
+    """Stops, disables, and removes the join + reaper units (not the per-user shim units)."""
+    for unit in (JOIN_UNIT, REAPER_TIMER_UNIT, REAPER_SERVICE_UNIT):
+        _remove_unit(unit)
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+
+
+def remove_shim_template_unit():
+    """Removes jellyfin-mpv-shim@.service. Only safe once no per-user instances remain."""
+    subprocess.run(["sudo", "rm", "-f", str(SYSTEMD_DIR / SHIM_TEMPLATE_UNIT)], check=False)
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+
+
+def remove_sudoers_rule():
+    subprocess.run(["sudo", "rm", "-f", str(SUDOERS_PATH)], check=False)
 
 
 def _write_unit(path: Path, content: str):

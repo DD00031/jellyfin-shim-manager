@@ -24,8 +24,16 @@ a clean web UI for both onboarding and admin control.
   (via `fbi`) showing whether Jellyfin/the network/a stream is up, for a
   TV-connected Pi with no monitor attached to it otherwise.
 - **`jellyfin-shim-manager setup`** — installs the systemd units, a narrowly
-  scoped sudoers rule, a default config file, and (interactively) your first
-  admin account, in one shot.
+  scoped sudoers rule, a default config file, checks/installs `mpv` and
+  `jellyfin-mpv-shim` itself, and (interactively) your first admin account,
+  in one shot.
+- **`jellyfin-shim-manager deps`** — checks for `mpv`, `jellyfin-mpv-shim`,
+  and the optional tools (`openssl`, `qrencode`, `fbi`), and can install
+  what's missing with `--install`.
+- **`jellyfin-shim-manager update`** / **`update.sh`** — pulls the latest
+  version, reinstalls via `pipx`, and refreshes the systemd units.
+- **`jellyfin-shim-manager uninstall`** / **`uninstall.sh`** — removes the
+  systemd units, sudoers rule, and (opt-in) instances/config/the CLI itself.
 
 ### How login actually works
 
@@ -59,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/
 Or manually:
 
 ```bash
-sudo apt install -y git python3 python3-pip python3-venv jq qrencode openssl
+sudo apt install -y git python3 python3-pip python3-venv
 pipx install git+https://github.com/DD00031/jellyfin-shim-manager.git
 jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
 ```
@@ -67,6 +75,9 @@ jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
 `setup`:
 - writes `/etc/jellyfin-shim-manager/config.json` (if it doesn't already
   exist),
+- checks for `mpv` and `jellyfin-mpv-shim` and installs them (via `apt` and
+  `pip install --break-system-packages` respectively) if missing — same as
+  running `jellyfin-shim-manager deps --install --required-only`,
 - installs the `jellyfin-mpv-shim@.service` template unit plus the
   `jellyfin-shim-manager-join` and `jellyfin-shim-manager-reaper` units,
 - adds a sudoers rule so the web app and reaper can start/stop/enable/disable
@@ -75,6 +86,10 @@ jellyfin-shim-manager setup           # add --tls for a self-signed HTTPS cert
   hashed, in `/etc/jellyfin-shim-manager/admin.json`, mode 0600),
 - with `--tls`, generates a self-signed cert (`openssl`) and turns on HTTPS
   for the web app.
+
+Optional tools aren't installed automatically — run `jellyfin-shim-manager
+deps --install` to also grab `openssl` (for `--tls`), `qrencode` (for
+`join-qr.png`), and `fbi` (for `monitor`'s framebuffer screen).
 
 ## Configure
 
@@ -122,6 +137,10 @@ jellyfin-shim-manager reap                   # manually run the temporary-login 
 jellyfin-shim-manager reap --dry-run         # see what reap would do without doing it
 jellyfin-shim-manager monitor                # run the status-screen loop in the foreground
 jellyfin-shim-manager config                 # print the effective config
+jellyfin-shim-manager deps                   # check mpv/jellyfin-mpv-shim/openssl/qrencode/fbi
+jellyfin-shim-manager deps --install         # install whatever's missing
+jellyfin-shim-manager update                 # pull latest + reinstall + refresh units
+jellyfin-shim-manager uninstall              # remove systemd units + sudoers rule
 ```
 
 In normal operation the `join` (which also serves `/admin`) and `reaper`
@@ -129,6 +148,38 @@ units run as services/timers (via `setup`), and you mostly just use the web
 UI plus `add`/`remove`/`list` for anything scripted. `monitor` is meant to be
 launched from an autologin `.bash_profile`/`.xinitrc` on the Pi's local
 console, since it drives the physical framebuffer.
+
+## Update / uninstall
+
+Update to the latest version in place:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/update.sh | bash
+# or, if already installed:
+jellyfin-shim-manager update
+```
+
+This pulls the latest source, reinstalls via `pipx`, and re-runs `setup` to
+refresh the systemd units — your existing `config.json`, admin credentials,
+and TLS certs are left untouched.
+
+Uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/uninstall.sh | bash
+```
+
+By default this only removes jellyfin-shim-manager itself (its systemd
+units, sudoers rule, the pipx-installed CLI, and the cloned source). Your
+configured `jellyfin-mpv-shim@*` instances and their saved logins keep
+running untouched. Add `--purge-instances` to also stop/remove every
+instance, or `--purge-config` to also delete `/etc/jellyfin-shim-manager`
+(admin credentials, TLS certs). The underlying command (usable directly, or
+if you'd rather keep the CLI installed) is:
+
+```bash
+jellyfin-shim-manager uninstall [--purge-instances] [--purge-config] [-y]
+```
 
 ## Things to verify for your setup
 

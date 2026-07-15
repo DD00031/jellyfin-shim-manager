@@ -6,7 +6,7 @@
 # Installs OS dependencies, pipx-installs the jellyfin-shim-manager CLI so it's
 # on PATH as `jellyfin-shim-manager`, and (unless --no-setup is passed) runs
 # `jellyfin-shim-manager setup` to install the systemd units, sudoers rule,
-# and default config file.
+# default config file, and (via `deps`) mpv + jellyfin-mpv-shim itself.
 
 set -euo pipefail
 
@@ -23,10 +23,13 @@ done
 
 echo "==> Checking dependencies"
 if ! command -v git >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-    echo "Installing git, python3, pip, jq, qrencode via apt..."
+    echo "Installing git and python3 via apt..."
     sudo apt update
-    sudo apt install -y git python3 python3-pip python3-venv jq qrencode openssl
+    sudo apt install -y git python3 python3-pip python3-venv
 fi
+# mpv and jellyfin-mpv-shim itself are checked/installed by `jellyfin-shim-manager setup`
+# below (via its `deps` command), since that needs to happen whether this
+# script or a manual pipx install put the CLI on PATH.
 
 if ! command -v pipx >/dev/null 2>&1; then
     echo "==> Installing pipx"
@@ -76,9 +79,13 @@ Done!
 
 Next steps:
   1. Edit /etc/jellyfin-shim-manager/config.json (server URL, LAN IP, etc.)
-  2. jellyfin-shim-manager add <username>       # log in a permanent instance
-  3. jellyfin-shim-manager list                 # see configured instances
-  4. jellyfin-shim-manager join                 # (already running as a service) QR onboarding page
+  2. jellyfin-shim-manager deps                 # confirm mpv + jellyfin-mpv-shim installed OK
+  3. jellyfin-shim-manager add <username>       # log in a permanent instance
+  4. jellyfin-shim-manager list                 # see configured instances
+  5. jellyfin-shim-manager join                 # (already running as a service) QR onboarding page
+
+To update later:    curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/update.sh | bash
+To uninstall:        curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/uninstall.sh | bash
 
 See the README for the full command reference.
 EOF

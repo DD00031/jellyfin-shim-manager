@@ -11,22 +11,32 @@ Subcommands:
   setup             install systemd units, sudoers rule, and config file
   config            show or initialize the config file
   admin             manage the admin panel account
+  deps              check for (and optionally install) required tools
+  update            pull the latest version and reinstall via pipx
+  uninstall         remove systemd units, sudoers rule, and optionally data
 """
 
 import argparse
 import getpass
 import importlib.resources
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from . import auth
 from . import config as cfgmod
+from . import deps
 from . import instances as inst
 from . import monitor as monitor_mod
 from . import reap as reap_mod
 from . import systemd
 from . import web as web_mod
+
+DEFAULT_SRC_DIR = Path(
+    os.environ.get("JELLYFIN_SHIM_MANAGER_SRC", str(Path.home() / ".local" / "src" / "jellyfin-shim-manager"))
+)
 
 
 def cmd_add(cfg: dict, args):
@@ -127,6 +137,9 @@ def cmd_setup(cfg: dict, args):
 
     _install_default_images(cfg)
 
+    if not args.skip_deps:
+        _ensure_required_deps()
+
     if args.tls:
         cert, key = systemd.generate_self_signed_cert(cfg)
         cfgmod.write_default_config(path, {**cfg, "tls_enabled": True, "tls_cert": str(cert), "tls_key": str(key)})
@@ -178,6 +191,112 @@ def _prompt_set_admin_password():
 def cmd_admin(cfg: dict, args):
     if args.action == "set-password":
         _prompt_set_admin_password()
+
+
+def _ensure_required_deps():
+    status = deps.check_all()
+    missing_required = [n for n in deps.REQUIRED if not status[n]]
+    if not missing_required:
+        print("Required dependencies already installed: " + ", ".join(deps.REQUIRED))
+        return
+    print()
+    print("Missing required dependencies: " + ", ".join(missing_required))
+    deps.install_missing(missing_required)
+    print("Installed: " + ", ".join(missing_required))
+
+
+def cmd_deps(cfg: dict, args):
+    status = deps.check_all()
+    print("Dependency status:")
+    for name in deps.REQUIRED + deps.OPTIONAL:
+        kind = "required" if name in deps.REQUIRED else "optional"
+        state = "installed" if status[name] else "MISSING"
+        print(f"  - {name:<20} {state:<10} ({kind}) -- {deps.DESCRIPTIONS[name]}")
+
+    if not args.install:
+        if any(not ok for ok in status.values()):
+            print()
+            print("Run `jellyfin-shim-manager deps --install` to install what's missing.")
+        return
+
+    missing = [n for n, ok in status.items() if not ok]
+    if args.required_only:
+        missing = [n for n in missing if n in deps.REQUIRED]
+    if not missing:
+        print()
+        print("Nothing to install.")
+        return
+
+    print()
+    print(f"Installing: {', '.join(missing)}")
+    deps.install_missing(missing)
+    print("Done.")
+
+
+def cmd_update(cfg: dict, args):
+    src_dir = Path(args.src_dir) if args.src_dir else DEFAULT_SRC_DIR
+    if not (src_dir / ".git").is_dir():
+        print(f"No git checkout found at {src_dir}.", file=sys.stderr)
+        print(
+            "Re-run the installer to update instead:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/DD00031/jellyfin-shim-manager/main/install.sh | bash",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"Pulling latest changes in {src_dir}...")
+    subprocess.run(["git", "-C", str(src_dir), "pull", "--ff-only"], check=True)
+
+    pipx = shutil.which("pipx")
+    if not pipx:
+        print("pipx not found -- install it with `python3 -m pip install --user pipx` and re-run.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Reinstalling with pipx...")
+    subprocess.run([pipx, "install", "--force", str(src_dir)], check=True)
+
+    new_exe = shutil.which("jellyfin-shim-manager")
+    if new_exe:
+        print("Refreshing systemd units and config (safe to re-run; existing config.json is left alone)...")
+        subprocess.run([new_exe, "setup"], check=False)
+
+    print("Update complete.")
+
+
+def cmd_uninstall(cfg: dict, args):
+    if not args.yes:
+        scope = "the join/admin web app and reaper timer"
+        if args.purge_instances:
+            scope += ", every configured instance, and the shim template unit + sudoers rule"
+        if args.purge_config:
+            scope += f", and {cfgmod.config_path().parent} (config, admin credentials, TLS certs)"
+        confirm = input(f"This will remove: {scope}. Continue? [y/N] ").strip().lower()
+        if confirm != "y":
+            print("Aborted.")
+            return
+
+    print("Stopping and removing jellyfin-shim-manager-join / -reaper units...")
+    systemd.uninstall_manager_units()
+
+    if args.purge_instances:
+        print("Stopping, disabling, and deleting all configured instances...")
+        inst.purge_all_instances(cfg)
+        print("Removing the jellyfin-mpv-shim@ template unit and sudoers rule...")
+        systemd.remove_shim_template_unit()
+        systemd.remove_sudoers_rule()
+    else:
+        print("Leaving per-user jellyfin-mpv-shim@ instances and the sudoers rule in place")
+        print("(pass --purge-instances to remove those too).")
+
+    if args.purge_config:
+        etc_dir = cfgmod.config_path().parent
+        print(f"Removing {etc_dir}...")
+        subprocess.run(["sudo", "rm", "-rf", str(etc_dir)], check=False)
+
+    print()
+    print("jellyfin-shim-manager's systemd units have been removed.")
+    print("To remove the CLI itself: pipx uninstall jellyfin-shim-manager")
+    print("(the uninstall.sh script in the repo does all of the above in one step)")
 
 
 def _install_default_images(cfg: dict):
@@ -244,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--no-enable", action="store_true", help="install units without enabling/starting them")
     p_setup.add_argument("--tls", action="store_true", help="generate a self-signed cert and enable TLS for the web app")
     p_setup.add_argument("--reset-admin-password", action="store_true", help="prompt to set a new admin password even if one exists")
+    p_setup.add_argument("--skip-deps", action="store_true", help="don't check/install mpv and jellyfin-mpv-shim")
     p_setup.set_defaults(func=cmd_setup)
 
     p_config = sub.add_parser("config", help="show or initialize the config file")
@@ -253,6 +373,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_admin = sub.add_parser("admin", help="manage the admin panel account")
     p_admin.add_argument("action", choices=["set-password"])
     p_admin.set_defaults(func=cmd_admin)
+
+    p_deps = sub.add_parser("deps", help="check for (and optionally install) required tools like jellyfin-mpv-shim and mpv")
+    p_deps.add_argument("--install", action="store_true", help="install missing dependencies")
+    p_deps.add_argument("--required-only", action="store_true", help="with --install, skip optional tools (openssl, qrencode, fbi)")
+    p_deps.set_defaults(func=cmd_deps)
+
+    p_update = sub.add_parser("update", help="pull the latest version and reinstall via pipx")
+    p_update.add_argument("--src-dir", help="path to the git checkout (default: ~/.local/src/jellyfin-shim-manager)")
+    p_update.set_defaults(func=cmd_update)
+
+    p_uninstall = sub.add_parser("uninstall", help="remove systemd units, sudoers rule, and optionally data")
+    p_uninstall.add_argument("--purge-instances", action="store_true", help="also remove every configured jellyfin-mpv-shim instance")
+    p_uninstall.add_argument("--purge-config", action="store_true", help="also delete /etc/jellyfin-shim-manager")
+    p_uninstall.add_argument("-y", "--yes", action="store_true", help="don't prompt for confirmation")
+    p_uninstall.set_defaults(func=cmd_uninstall)
 
     return parser
 
