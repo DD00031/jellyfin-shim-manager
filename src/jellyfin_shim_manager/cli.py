@@ -47,7 +47,7 @@ def cmd_add(cfg: dict, args):
 
     systemd.ensure_shim_template_unit(cfg)
 
-    if config_dir.is_dir() and (config_dir / "conf.json").exists():
+    if config_dir.is_dir() and (config_dir / "cred.json").exists():
         print(f"Config for '{user}' already exists at {config_dir}")
         confirm = input("Re-run login and overwrite it? [y/N] ").strip().lower()
         if confirm != "y":
@@ -180,6 +180,14 @@ def cmd_setup(cfg: dict, args):
     print("(or just restart the join service) to pick up changes.")
 
 
+def _normalize_jellyfin_url(url: str) -> str:
+    """Prepends http:// if the user left the scheme off (e.g. '192.168.1.10:8096')."""
+    url = url.strip()
+    if "://" not in url:
+        url = f"http://{url}"
+    return url
+
+
 def _gather_setup_overrides(args, interactive: bool) -> dict:
     defaults = cfgmod.DEFAULTS
 
@@ -197,10 +205,27 @@ def _gather_setup_overrides(args, interactive: bool) -> dict:
         config_base = input(f"Directory to store per-user shim configs [{default_config_base}]: ").strip()
     config_base = config_base or default_config_base
 
-    jellyfin_url = args.jellyfin_url
-    if not jellyfin_url and interactive:
-        jellyfin_url = input("Jellyfin server URL (e.g. http://192.168.1.10:8096): ").strip()
-    jellyfin_url = jellyfin_url or defaults["jellyfin_url"]
+    if args.jellyfin_url:
+        jellyfin_url = _normalize_jellyfin_url(args.jellyfin_url)
+        if not urlparse(jellyfin_url).hostname:
+            print(
+                f"WARNING: couldn't parse a hostname out of --jellyfin-url '{args.jellyfin_url}' "
+                f"(normalized to '{jellyfin_url}'). Fix \"jellyfin_url\" in the config by hand.",
+                file=sys.stderr,
+            )
+    elif interactive:
+        jellyfin_url = ""
+        while True:
+            raw = input("Jellyfin server URL (e.g. http://192.168.1.10:8096): ").strip()
+            if not raw:
+                print("This is required -- jellyfin-mpv-shim needs it to log in.")
+                continue
+            jellyfin_url = _normalize_jellyfin_url(raw)
+            if urlparse(jellyfin_url).hostname:
+                break
+            print(f"Couldn't parse a hostname out of '{raw}' -- try again (e.g. http://192.168.1.10:8096).")
+    else:
+        jellyfin_url = defaults["jellyfin_url"]
 
     parsed = urlparse(jellyfin_url) if jellyfin_url else None
     local_ip = args.local_ip or (parsed.hostname if parsed else None) or defaults["local_ip"]

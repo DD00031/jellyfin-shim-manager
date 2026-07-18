@@ -50,13 +50,20 @@ def run_shim_login(config_dir: Path, server_url: str, username: str, password: s
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise ShimLoginError("Timed out contacting the Jellyfin server.") from exc
     except FileNotFoundError as exc:
         raise ShimLoginError("jellyfin-mpv-shim is not installed or not on PATH.") from exc
 
-    if not (config_dir / "conf.json").exists():
+    # conf.json (and mpv.conf, input.conf, ...) gets written as soon as
+    # jellyfin-mpv-shim initializes the config dir, regardless of whether
+    # authentication actually succeeded -- confirmed on real hardware that a
+    # 401 still leaves conf.json behind. cred.json only gets written once
+    # the server has actually accepted the credentials, so that's the real
+    # success signal.
+    if not (config_dir / "cred.json").exists():
         output = (result.stderr or result.stdout or "").strip()
         hint = output.splitlines()[-1] if output else "login did not complete"
         raise ShimLoginError(f"Login failed: {hint}")
