@@ -34,39 +34,71 @@ def run_shim_login(config_dir: Path, server_url: str, username: str, password: s
     while this subprocess is running -- that's a limitation of the upstream
     CLI, not something we can avoid short of patching it.
 
+    The child never exits on its own: confirmed on real hardware that after
+    `add` completes (success or failure) it loops into an interactive
+    "Server URL:" prompt and just re-prompts forever once stdin hits EOF
+    (via stdin=DEVNULL below) rather than exiting. So instead of waiting for
+    it to exit, we poll for cred.json -- the real success signal, written
+    only once the server actually accepts the credentials (conf.json and
+    friends get written just from initializing the config dir, success or
+    not) -- and kill the child as soon as we see it, or once `timeout`
+    elapses without it. This also means a successful login returns in well
+    under a second instead of always waiting out the full timeout.
+
     Raises ShimLoginError with a user-facing message on failure.
     """
-    try:
-        result = subprocess.run(
-            [
-                "jellyfin-mpv-shim",
-                "--config", str(config_dir),
-                "--no-gui",
-                "--server", server_url,
-                "--username", username,
-                "--password", password,
-                "add",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ShimLoginError("Timed out contacting the Jellyfin server.") from exc
-    except FileNotFoundError as exc:
-        raise ShimLoginError("jellyfin-mpv-shim is not installed or not on PATH.") from exc
+    cred_path = config_dir / "cred.json"
+    log_path = config_dir / ".login.log"
 
-    # conf.json (and mpv.conf, input.conf, ...) gets written as soon as
-    # jellyfin-mpv-shim initializes the config dir, regardless of whether
-    # authentication actually succeeded -- confirmed on real hardware that a
-    # 401 still leaves conf.json behind. cred.json only gets written once
-    # the server has actually accepted the credentials, so that's the real
-    # success signal.
-    if not (config_dir / "cred.json").exists():
-        output = (result.stderr or result.stdout or "").strip()
-        hint = output.splitlines()[-1] if output else "login did not complete"
-        raise ShimLoginError(f"Login failed: {hint}")
+    try:
+        log_file = open(log_path, "w")
+    except OSError as exc:
+        raise ShimLoginError(f"Couldn't open login log: {exc}") from exc
+
+    try:
+        try:
+            proc = subprocess.Popen(
+                [
+                    "jellyfin-mpv-shim",
+                    "--config", str(config_dir),
+                    "--no-gui",
+                    "--server", server_url,
+                    "--username", username,
+                    "--password", password,
+                    "add",
+                ],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            raise ShimLoginError("jellyfin-mpv-shim is not installed or not on PATH.") from exc
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cred_path.exists():
+                break
+            if proc.poll() is not None:
+                break  # exited on its own -- nothing more to wait for
+            time.sleep(0.5)
+
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    finally:
+        log_file.close()
+
+    if cred_path.exists():
+        log_path.unlink(missing_ok=True)
+        return
+
+    output = log_path.read_text(errors="ignore").strip() if log_path.exists() else ""
+    hint = output.splitlines()[-1] if output else "login did not complete"
+    raise ShimLoginError(f"Login failed: {hint}")
 
 
 def run_systemctl(*args, check=True):
