@@ -22,7 +22,7 @@ DESCRIPTIONS = {
     "mpv": "media player jellyfin-mpv-shim drives",
     "jellyfin-mpv-shim": "the shim itself -- casts Jellyfin playback to mpv",
     "openssl": "generates the self-signed cert for `setup --tls`",
-    "qrencode": "generates the join-qr.png shown on the idle status screen",
+    "qrencode": "CLI QR tool -- only needed if you want to hand-roll your own join-qr.png instead of `generate-qr`",
     "fbi": "draws status images to the console framebuffer (`monitor`)",
 }
 

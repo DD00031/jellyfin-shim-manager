@@ -12,6 +12,7 @@ Subcommands:
   config            show or initialize the config file
   admin             manage the admin panel account
   deps              check for (and optionally install) required tools
+  generate-qr       composite the /join QR code onto ready.png -> join-qr.png
   update            pull the latest version and reinstall via pipx
   uninstall         remove systemd units, sudoers rule, and optionally data
 """
@@ -32,6 +33,7 @@ from . import deps
 from . import instances as inst
 from . import monitor as monitor_mod
 from . import privileged
+from . import qrgen
 from . import reap as reap_mod
 from . import systemd
 from . import web as web_mod
@@ -153,6 +155,10 @@ def cmd_setup(cfg: dict, args):
         cfgmod.write_default_config(path, {**cfg, "tls_enabled": True, "tls_cert": str(cert), "tls_key": str(key)})
         cfg = cfgmod.load_config()
         print(f"Generated a self-signed TLS cert at {cert} (owned by '{cfg['run_as_user']}') and enabled TLS.")
+
+    # Run after the --tls block above so the composited QR encodes the
+    # final http(s) scheme, not whatever it was before --tls flipped it on.
+    _generate_join_qr(cfg, force=args.regenerate_qr)
 
     auth.load_or_create_secret_key(owner=cfg["run_as_user"])
     if not interactive:
@@ -379,7 +385,32 @@ def _install_default_images(cfg: dict):
             continue
         src = assets / name
         dest.write_bytes(src.read_bytes())
-    print(f"Placeholder status images installed to {image_dir} (customize these, and add join-qr.png)")
+    print(f"Placeholder status images installed to {image_dir} (customize these any time)")
+
+
+def _generate_join_qr(cfg: dict, force: bool = False):
+    """Wraps qrgen.generate_join_qr with the warning-not-abort handling setup wants."""
+    try:
+        dest = qrgen.generate_join_qr(cfg, force=force)
+    except qrgen.QrGenerationError as exc:
+        print(f"WARNING: couldn't generate join-qr.png: {exc}", file=sys.stderr)
+        return
+    except ImportError as exc:
+        print(f"WARNING: qrcode/Pillow not installed -- skipping join-qr.png ({exc})", file=sys.stderr)
+        return
+    print(f"join-qr.png ready at {dest} (pass --regenerate-qr to rebuild it)")
+
+
+def cmd_generate_qr(cfg: dict, args):
+    try:
+        dest = qrgen.generate_join_qr(cfg, force=args.force)
+    except qrgen.QrGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    except ImportError as exc:
+        print(f"qrcode/Pillow not installed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Wrote {dest} (join URL: {qrgen.join_url(cfg)})")
 
 
 def cmd_config(cfg: dict, args):
@@ -441,7 +472,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--non-interactive", action="store_true",
         help="never prompt, even if a terminal is attached (use --run-as-user/--jellyfin-url/etc. instead)",
     )
+    p_setup.add_argument(
+        "--regenerate-qr", action="store_true",
+        help="rebuild join-qr.png even if it already exists (e.g. after changing ready.png or local_ip)",
+    )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_qr = sub.add_parser("generate-qr", help="composite the /join QR code onto ready.png -> join-qr.png")
+    p_qr.add_argument("--force", action="store_true", help="regenerate even if join-qr.png already exists")
+    p_qr.set_defaults(func=cmd_generate_qr)
 
     p_config = sub.add_parser("config", help="show or initialize the config file")
     p_config.add_argument("--init", action="store_true", help="write out the default config file")

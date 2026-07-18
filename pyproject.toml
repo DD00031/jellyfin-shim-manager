@@ -11,6 +11,8 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = [
     "flask>=2.0",
+    "Pillow>=9.0",
+    "qrcode[pil]>=7.0",
 ]
 
 [project.scripts]

@@ -106,15 +106,18 @@ these non-interactively (useful for scripted installs — add
 - adds a sudoers rule so the web app and reaper can start/stop/enable/disable
   `jellyfin-mpv-shim@*` services without running as root,
 - with `--tls`, generates a self-signed cert (`openssl`) and turns on HTTPS
-  for the web app.
+  for the web app,
+- generates `join-qr.png` — a QR code for the `/join` page composited onto
+  `ready.png` — via `jellyfin-shim-manager generate-qr` (see below).
 
 Admin credentials, the session secret key, and the TLS key are all written
 owned by the "run as" user (mode 0600) — that's the account the join/admin
 service actually runs as, so it's the one that needs to read them back.
 
 Optional tools aren't installed automatically — run `jellyfin-shim-manager
-deps --install` to also grab `openssl` (for `--tls`), `qrencode` (for
-`join-qr.png`), and `fbi` (for `monitor`'s framebuffer screen).
+deps --install` to also grab `openssl` (for `--tls`) and `fbi` (for
+`monitor`'s framebuffer screen). `qrencode` is listed there too but isn't
+part of the default flow anymore — see the status screen images note below.
 
 ## Configure
 
@@ -167,6 +170,8 @@ jellyfin-shim-manager monitor                # run the status-screen loop in the
 jellyfin-shim-manager config                 # print the effective config
 jellyfin-shim-manager deps                   # check mpv/jellyfin-mpv-shim/openssl/qrencode/fbi
 jellyfin-shim-manager deps --install         # install whatever's missing
+jellyfin-shim-manager generate-qr            # (re)composite join-qr.png onto ready.png
+jellyfin-shim-manager generate-qr --force    # rebuild even if join-qr.png already exists
 jellyfin-shim-manager update                 # pull latest + reinstall + refresh units
 jellyfin-shim-manager uninstall              # remove systemd units + sudoers rule
 ```
@@ -220,11 +225,26 @@ jellyfin-shim-manager uninstall [--purge-instances] [--purge-config] [-y]
 2. **Status screen images.** `setup` copies placeholder PNGs into `image_dir`
    (check the path with `jellyfin-shim-manager config`) for `no_jellyfin` /
    `no_internet` / `no_server` / `playing` states — swap in your own. The
-   `idle` state expects `join-qr.png`, a static QR code pointing at
-   `http://<local_ip>:<bind_port>/join`, e.g.:
+   `idle` state expects `join-qr.png`, which `setup` generates automatically
+   by compositing a QR code for `http(s)://<local_ip>:<bind_port>/join`
+   (scheme depending on `tls_enabled`) onto a copy of `ready.png` — the QR
+   is 700×700px, centered at `(900, 960)` on the (assumed 3840×2160)
+   `ready.png` canvas. `ready.png` itself is never modified, since it's also
+   used standalone for the `playing` state.
+
+   Swap in your own `ready.png` (same 3840×2160 canvas, or adjust
+   `QR_SIZE`/`QR_CENTER_X`/`QR_CENTER_Y` in `qrgen.py` if yours differs) and
+   re-run:
    ```
-   qrencode -o /home/<run_as_user>/Resources/join-qr.png -s 10 "http://192.168.1.10:5005/join"
+   jellyfin-shim-manager generate-qr --force
    ```
+   This also picks up changes to `local_ip`, `bind_port`, or `tls_enabled`
+   without needing `--reset-config`. If you'd rather hand-roll a fully
+   custom `join-qr.png` (different background, styling, etc.), just write
+   your own file to `image_dir/join-qr.png` directly — `generate-qr` (and
+   `setup`, without `--regenerate-qr`) leave it alone if it already exists.
+   The `qrencode` CLI (`jellyfin-shim-manager deps --install`) is handy for
+   that by-hand path, but isn't used by the default flow.
 
 ## Notes
 
