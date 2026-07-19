@@ -1,10 +1,14 @@
 """Generates and installs the systemd units and sudoers rule this tool needs.
 
-Three kinds of units are involved:
+Four kinds of units are involved:
   - jellyfin-mpv-shim@.service   template unit, one instance per user, started
                                   by `add` / the join web app.
   - jellyfin-shim-manager-join.service       runs `jellyfin-shim-manager join`
   - jellyfin-shim-manager-reaper.service/.timer  periodically runs `jellyfin-shim-manager reap`
+  - jellyfin-shim-manager-monitor.service    runs `jellyfin-shim-manager monitor`
+                                  (the framebuffer status screen); opt-out via
+                                  `setup --no-monitor-service`, since it takes
+                                  over tty1's login getty.
 """
 
 import shutil
@@ -21,6 +25,7 @@ SHIM_TEMPLATE_UNIT = "jellyfin-mpv-shim@.service"
 JOIN_UNIT = "jellyfin-shim-manager-join.service"
 REAPER_SERVICE_UNIT = "jellyfin-shim-manager-reaper.service"
 REAPER_TIMER_UNIT = "jellyfin-shim-manager-reaper.timer"
+MONITOR_UNIT = "jellyfin-shim-manager-monitor.service"
 
 
 def _shim_template_unit(cfg: dict) -> str:
@@ -59,6 +64,34 @@ User={cfg['run_as_user']}
 ExecStart={exe} join
 Restart=on-failure
 RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _monitor_unit(cfg: dict, exe: str) -> str:
+    # Runs as root (not run_as_user, unlike join/reaper): fbi needs direct
+    # framebuffer/VT access. Conflicts with getty@tty1 because they'd
+    # otherwise fight over the same VT -- starting this stops the tty1
+    # login prompt, which is the intended tradeoff (see setup's output).
+    return f"""[Unit]
+Description=jellyfin-shim-manager status screen (framebuffer)
+After=network-online.target getty@tty1.service
+Wants=network-online.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=root
+ExecStart={exe} monitor
+Restart=on-failure
+RestartSec=5
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -109,20 +142,29 @@ def ensure_shim_template_unit(cfg: dict, force: bool = False) -> bool:
     return True
 
 
-def install_manager_units(cfg: dict, exe: str = None, enable: bool = True):
-    """Installs the join-app and reaper units, plus the shim template unit."""
+def install_manager_units(cfg: dict, exe: str = None, enable: bool = True, monitor_service: bool = True):
+    """Installs the join-app and reaper units, plus the shim template unit.
+
+    monitor_service installs+enables jellyfin-shim-manager-monitor.service
+    too -- opt out with setup --no-monitor-service if this box isn't a
+    headless console (e.g. it's running a desktop on tty1).
+    """
     exe = exe or shutil.which("jellyfin-shim-manager") or "/usr/local/bin/jellyfin-shim-manager"
 
     ensure_shim_template_unit(cfg)
     _write_unit(SYSTEMD_DIR / JOIN_UNIT, _join_unit(cfg, exe))
     _write_unit(SYSTEMD_DIR / REAPER_SERVICE_UNIT, _reaper_service_unit(exe))
     _write_unit(SYSTEMD_DIR / REAPER_TIMER_UNIT, _reaper_timer_unit())
+    if monitor_service:
+        _write_unit(SYSTEMD_DIR / MONITOR_UNIT, _monitor_unit(cfg, exe))
 
     subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
 
     if enable:
         subprocess.run(["sudo", "systemctl", "enable", "--now", REAPER_TIMER_UNIT], check=True)
         subprocess.run(["sudo", "systemctl", "enable", "--now", JOIN_UNIT], check=True)
+        if monitor_service:
+            subprocess.run(["sudo", "systemctl", "enable", "--now", MONITOR_UNIT], check=True)
 
 
 def generate_self_signed_cert(cfg: dict, days: int = 825):
@@ -179,8 +221,8 @@ def _remove_unit(unit_name: str):
 
 
 def uninstall_manager_units():
-    """Stops, disables, and removes the join + reaper units (not the per-user shim units)."""
-    for unit in (JOIN_UNIT, REAPER_TIMER_UNIT, REAPER_SERVICE_UNIT):
+    """Stops, disables, and removes the join + reaper + monitor units (not the per-user shim units)."""
+    for unit in (JOIN_UNIT, REAPER_TIMER_UNIT, REAPER_SERVICE_UNIT, MONITOR_UNIT):
         _remove_unit(unit)
     subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
 

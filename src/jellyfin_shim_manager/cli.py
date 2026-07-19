@@ -6,7 +6,8 @@ Subcommands:
   remove <user>     stop, disable, and optionally delete an instance
   list              show all configured instances and their status
   join              run the join (onboarding) + admin web app
-  monitor           run the framebuffer status screen loop
+  monitor           run the framebuffer status screen loop (installed as a
+                    systemd service by `setup`, see --no-monitor-service)
   reap              disable+delete expired temporary instances (for the timer)
   setup             install systemd units, sudoers rule, and config file
   config            show or initialize the config file
@@ -176,11 +177,21 @@ def cmd_setup(cfg: dict, args):
     systemd.install_sudoers_rule(cfg)
     print(f"Installed sudoers rule at {systemd.SUDOERS_PATH}")
 
-    systemd.install_manager_units(cfg, enable=not args.no_enable)
+    monitor_service = not args.no_monitor_service
+    systemd.install_manager_units(cfg, enable=not args.no_enable, monitor_service=monitor_service)
     print("Installed and enabled systemd units:")
     print(f"  - {systemd.SHIM_TEMPLATE_UNIT}")
     print(f"  - {systemd.JOIN_UNIT}")
     print(f"  - {systemd.REAPER_SERVICE_UNIT} / {systemd.REAPER_TIMER_UNIT}")
+    if monitor_service:
+        print(f"  - {systemd.MONITOR_UNIT}")
+        print()
+        print(
+            "NOTE: the status screen service takes over tty1 -- the local console's "
+            "login prompt is replaced by the framebuffer status screen. This is expected "
+            "on a headless console (Raspberry Pi OS Lite); re-run with --no-monitor-service "
+            "if this box runs a desktop on tty1."
+        )
     print()
     print(f"Config is at {path} -- edit it any time, then re-run `jellyfin-shim-manager setup`")
     print("(or just restart the join service) to pick up changes.")
@@ -465,6 +476,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--jellyfin-url", help="Jellyfin server URL, e.g. http://192.168.1.10:8096")
     p_setup.add_argument("--local-ip", help="LAN IP `monitor` health-checks (default: parsed from --jellyfin-url)")
     p_setup.add_argument("--no-enable", action="store_true", help="install units without enabling/starting them")
+    p_setup.add_argument(
+        "--no-monitor-service", action="store_true",
+        help="don't install/enable the status-screen service (it takes over tty1's login "
+        "getty -- skip this if the box runs a desktop, not a headless console)",
+    )
     p_setup.add_argument("--tls", action="store_true", help="generate a self-signed cert and enable TLS for the web app")
     p_setup.add_argument("--reset-admin-password", action="store_true", help="prompt to set a new admin password even if one exists")
     p_setup.add_argument("--skip-deps", action="store_true", help="don't check/install mpv and jellyfin-mpv-shim")

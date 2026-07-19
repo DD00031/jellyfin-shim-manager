@@ -21,12 +21,14 @@ a clean web UI for both onboarding and admin control.
 - **`jellyfin-shim-manager reap`** — disables and deletes temporary instances
   that have been idle too long. Meant to run on a timer.
 - **`jellyfin-shim-manager monitor`** — drives a framebuffer status screen
-  (via `fbi`) showing whether Jellyfin/the network/a stream is up, for a
-  TV-connected Pi with no monitor attached to it otherwise.
+  (via `fbi`) on the Pi's local console (tty1) showing whether
+  Jellyfin/the network/a stream is up, for a TV-connected Pi with no other
+  monitor attached. Installed and enabled as a systemd service by `setup`
+  (see the tty1/getty note below); opt out with `setup --no-monitor-service`.
 - **`jellyfin-shim-manager setup`** — installs the systemd units, a narrowly
   scoped sudoers rule, a default config file, checks/installs `mpv` and
-  `jellyfin-mpv-shim` itself, and (interactively) your first admin account,
-  in one shot.
+  `jellyfin-mpv-shim` itself, generates `join-qr.png`, and (interactively)
+  your first admin account, in one shot.
 - **`jellyfin-shim-manager deps`** — checks for `mpv`, `jellyfin-mpv-shim`,
   and the optional tools (`openssl`, `qrencode`, `fbi`), and can install
   what's missing with `--install`.
@@ -102,7 +104,8 @@ these non-interactively (useful for scripted installs — add
   `pip install --break-system-packages` respectively) if missing — same as
   running `jellyfin-shim-manager deps --install --required-only`,
 - installs the `jellyfin-mpv-shim@.service` template unit plus the
-  `jellyfin-shim-manager-join` and `jellyfin-shim-manager-reaper` units,
+  `jellyfin-shim-manager-join`, `jellyfin-shim-manager-reaper`, and
+  `jellyfin-shim-manager-monitor` units (see below for the last one),
 - adds a sudoers rule so the web app and reaper can start/stop/enable/disable
   `jellyfin-mpv-shim@*` services without running as root,
 - with `--tls`, generates a self-signed cert (`openssl`) and turns on HTTPS
@@ -113,6 +116,20 @@ these non-interactively (useful for scripted installs — add
 Admin credentials, the session secret key, and the TLS key are all written
 owned by the "run as" user (mode 0600) — that's the account the join/admin
 service actually runs as, so it's the one that needs to read them back.
+
+### The status screen takes over tty1
+
+`jellyfin-shim-manager-monitor.service` runs `monitor` as **root** (not the
+"run as" user — `fbi` needs direct framebuffer/VT access) and is wired to
+`Conflicts=getty@tty1.service`: starting it stops the local console's login
+prompt on tty1, replacing it with the framebuffer status screen. That's the
+intended tradeoff for a Pi that boots straight to a TV-facing status screen
+with no other display attached (Raspberry Pi OS **Lite** / text console).
+
+If this box instead boots to a desktop (or you otherwise want tty1's login
+prompt left alone), run `setup --no-monitor-service` — you can still run
+`jellyfin-shim-manager monitor` by hand later, or install the service
+yourself with different unit settings.
 
 Optional tools aren't installed automatically — run `jellyfin-shim-manager
 deps --install` to also grab `openssl` (for `--tls`) and `fbi` (for
@@ -176,11 +193,11 @@ jellyfin-shim-manager update                 # pull latest + reinstall + refresh
 jellyfin-shim-manager uninstall              # remove systemd units + sudoers rule
 ```
 
-In normal operation the `join` (which also serves `/admin`) and `reaper`
-units run as services/timers (via `setup`), and you mostly just use the web
-UI plus `add`/`remove`/`list` for anything scripted. `monitor` is meant to be
-launched from an autologin `.bash_profile`/`.xinitrc` on the Pi's local
-console, since it drives the physical framebuffer.
+In normal operation `join` (which also serves `/admin`), `reaper`, and
+`monitor` all run as systemd services/timers installed by `setup` — you
+mostly just use the web UI plus `add`/`remove`/`list` for anything scripted.
+`jellyfin-shim-manager monitor` itself is only for running it by hand (e.g.
+after `setup --no-monitor-service`, or for debugging).
 
 ## Update / uninstall
 
