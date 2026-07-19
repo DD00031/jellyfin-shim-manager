@@ -7,6 +7,7 @@ module level, so importing this module (e.g. just to build the join URL)
 never requires them -- only actually generating the composite does.
 """
 
+import socket
 from pathlib import Path
 
 QR_SIZE = 700
@@ -18,9 +19,33 @@ class QrGenerationError(RuntimeError):
     """Raised when join-qr.png can't be generated (missing ready.png, etc.)."""
 
 
+def detect_outbound_ip() -> str:
+    """Best-effort LAN IP this box would use to reach the outside world.
+
+    Standard no-traffic trick: connect() a UDP socket to an external address
+    (this never actually sends a packet) and read back the local endpoint
+    the kernel picked for that route. Returns "" -- rather than raising --
+    if there's no default route (e.g. offline at the time this runs).
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return ""
+
+
 def join_url(cfg: dict) -> str:
+    """The URL embedded in the QR code -- this box's own address, NOT the
+    Jellyfin server's. `local_ip` (used by monitor.py's health check) means
+    "the Jellyfin server's LAN IP" everywhere else in this codebase; the
+    join/admin web app is served by this box itself on bind_host/bind_port,
+    which is a different address whenever the Pi isn't also the Jellyfin
+    server. That mismatch previously pointed the QR at the wrong machine.
+    """
     scheme = "https" if cfg.get("tls_enabled") else "http"
-    return f"{scheme}://{cfg['local_ip']}:{cfg['bind_port']}/join"
+    manager_ip = cfg.get("manager_ip") or detect_outbound_ip()
+    return f"{scheme}://{manager_ip}:{cfg['bind_port']}/join"
 
 
 def generate_join_qr(cfg: dict, force: bool = False) -> Path:
@@ -28,8 +53,9 @@ def generate_join_qr(cfg: dict, force: bool = False) -> Path:
 
     Skips regeneration if join-qr.png already exists and force is False --
     same "don't clobber customization" behavior as _install_default_images.
-    Raises QrGenerationError if ready.png isn't there yet, or ImportError if
-    qrcode/Pillow aren't installed.
+    Raises QrGenerationError if ready.png isn't there yet (or manager_ip is
+    unset and auto-detection also fails -- better than silently embedding a
+    broken URL), or ImportError if qrcode/Pillow aren't installed.
     """
     import qrcode
     from PIL import Image
@@ -47,7 +73,14 @@ def generate_join_qr(cfg: dict, force: bool = False) -> Path:
             "to install the placeholder status images."
         )
 
-    qr_img = qrcode.make(join_url(cfg)).convert("RGB").resize((QR_SIZE, QR_SIZE))
+    url = join_url(cfg)
+    if not (cfg.get("manager_ip") or detect_outbound_ip()):
+        raise QrGenerationError(
+            f"couldn't determine this box's LAN IP for the join QR code (got '{url}'). "
+            'Set "manager_ip" in the config by hand, then re-run with --force.'
+        )
+
+    qr_img = qrcode.make(url).convert("RGB").resize((QR_SIZE, QR_SIZE))
 
     # (900, 960) is the QR code's *center*, not its top-left corner --
     # translate to a paste origin.

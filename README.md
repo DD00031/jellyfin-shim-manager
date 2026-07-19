@@ -136,6 +136,26 @@ deps --install` to also grab `openssl` (for `--tls`) and `fbi` (for
 `monitor`'s framebuffer screen). `qrencode` is listed there too but isn't
 part of the default flow anymore — see the status screen images note below.
 
+### Two different LAN addresses
+
+There are two LAN IPs in play, and conflating them previously pointed the
+join QR code at the wrong machine:
+
+- **`local_ip`** — the **Jellyfin server's** address. Used only by
+  `monitor`'s health check (`http://<local_ip>:<jellyfin_port>/health`).
+  Parsed from `jellyfin_url`'s host by default.
+- **`manager_ip`** — **this Pi's own** address, i.e. wherever
+  `jellyfin-shim-manager join` is actually bound and listening. This is
+  what other devices need to reach `/join`, and what gets embedded in
+  `join-qr.png`. Auto-detected by `setup` (the standard "open a UDP socket
+  to some external address and read back the local endpoint" trick — no
+  packets actually sent), with a chance to confirm or override it.
+
+These are the same value only when the Pi running jellyfin-shim-manager
+*is* the Jellyfin server. On the far more common setup — Pi as a client,
+Jellyfin running elsewhere — they're different addresses, and the QR code
+needs `manager_ip`, not `local_ip`.
+
 ## Configure
 
 Edit `/etc/jellyfin-shim-manager/config.json`:
@@ -147,8 +167,9 @@ Edit `/etc/jellyfin-shim-manager/config.json`:
   "service_prefix": "jellyfin-mpv-shim@",
   "jellyfin_url": "http://192.168.1.10:8096",   // your Jellyfin server
   "jellyfin_port": 8096,
-  "local_ip": "192.168.1.10",                   // match jellyfin_url's host
-  "tailscale_ip": "",                           // optional fallback address
+  "local_ip": "192.168.1.10",                   // the SERVER's IP -- monitor's health check
+  "tailscale_ip": "",                           // optional fallback address (also the server's)
+  "manager_ip": "192.168.1.20",                 // THIS Pi's own IP -- embedded in the join QR code
   "bind_host": "0.0.0.0",                       // web app bind address
   "bind_port": 5005,
   "login_timeout_seconds": 45,
@@ -211,7 +232,12 @@ jellyfin-shim-manager update
 
 This pulls the latest source, reinstalls via `pipx`, and re-runs `setup` to
 refresh the systemd units — your existing `config.json`, admin credentials,
-and TLS certs are left untouched.
+and TLS certs are left untouched, *except* that `setup` backfills any
+config field that didn't exist yet in an older config (like `manager_ip`,
+added to fix the join QR code pointing at the wrong machine — see "Two
+different LAN addresses" above). If a terminal is attached, it'll prompt to
+confirm/override the auto-detected value; either way `join-qr.png` gets
+automatically rebuilt with the corrected URL as part of the same `update`.
 
 Uninstall:
 
@@ -243,11 +269,12 @@ jellyfin-shim-manager uninstall [--purge-instances] [--purge-config] [-y]
    (check the path with `jellyfin-shim-manager config`) for `no_jellyfin` /
    `no_internet` / `no_server` / `playing` states — swap in your own. The
    `idle` state expects `join-qr.png`, which `setup` generates automatically
-   by compositing a QR code for `http(s)://<local_ip>:<bind_port>/join`
-   (scheme depending on `tls_enabled`) onto a copy of `ready.png` — the QR
-   is 700×700px, centered at `(900, 960)` on the (assumed 3840×2160)
-   `ready.png` canvas. `ready.png` itself is never modified, since it's also
-   used standalone for the `playing` state.
+   by compositing a QR code for `http(s)://<manager_ip>:<bind_port>/join`
+   (scheme depending on `tls_enabled` — **`manager_ip`, this Pi's own IP,
+   not `local_ip`**, see "Two different LAN addresses" above) onto a copy
+   of `ready.png` — the QR is 700×700px, centered at `(900, 960)` on the
+   (assumed 3840×2160) `ready.png` canvas. `ready.png` itself is never
+   modified, since it's also used standalone for the `playing` state.
 
    Swap in your own `ready.png` (same 3840×2160 canvas, or adjust
    `QR_SIZE`/`QR_CENTER_X`/`QR_CENTER_Y` in `qrgen.py` if yours differs) and
@@ -255,8 +282,10 @@ jellyfin-shim-manager uninstall [--purge-instances] [--purge-config] [-y]
    ```
    jellyfin-shim-manager generate-qr --force
    ```
-   This also picks up changes to `local_ip`, `bind_port`, or `tls_enabled`
-   without needing `--reset-config`. If you'd rather hand-roll a fully
+   This also picks up changes to `manager_ip`, `bind_port`, or
+   `tls_enabled` without needing `--reset-config`. `generate-qr`'s output
+   always prints the exact URL it embedded — check that first if a scanned
+   code isn't connecting. If you'd rather hand-roll a fully
    custom `join-qr.png` (different background, styling, etc.), just write
    your own file to `image_dir/join-qr.png` directly — `generate-qr` (and
    `setup`, without `--regenerate-qr`) leave it alone if it already exists.

@@ -127,6 +127,7 @@ def cmd_reap(cfg: dict, args):
 def cmd_setup(cfg: dict, args):
     path = cfgmod.config_path()
     interactive = sys.stdin.isatty() and not args.non_interactive
+    manager_ip_backfilled = False
 
     if not path.exists() or args.reset_config:
         overrides = _gather_setup_overrides(args, interactive)
@@ -141,6 +142,16 @@ def cmd_setup(cfg: dict, args):
             )
     else:
         print(f"Config already exists at {path} (use --reset-config to overwrite)")
+        if not cfg.get("manager_ip"):
+            # Backfill for configs written before manager_ip existed --
+            # don't require --reset-config (which would also touch
+            # run_as_user, jellyfin_url, etc.) just to pick this up.
+            manager_ip = _resolve_manager_ip(args, interactive)
+            if manager_ip:
+                cfgmod.write_default_config(path, {**cfg, "manager_ip": manager_ip})
+                cfg = cfgmod.load_config()
+                manager_ip_backfilled = True
+                print(f"Set \"manager_ip\" = {manager_ip} in {path}.")
 
     print(f"Services will run as user '{cfg['run_as_user']}'.")
     privileged.ensure_owned_dir(cfg["config_base"], cfg["run_as_user"])
@@ -159,7 +170,9 @@ def cmd_setup(cfg: dict, args):
 
     # Run after the --tls block above so the composited QR encodes the
     # final http(s) scheme, not whatever it was before --tls flipped it on.
-    _generate_join_qr(cfg, force=args.regenerate_qr)
+    # Force a rebuild if manager_ip was just backfilled: any existing
+    # join-qr.png on disk was generated with the old (wrong) URL.
+    _generate_join_qr(cfg, force=args.regenerate_qr or manager_ip_backfilled)
 
     auth.load_or_create_secret_key(owner=cfg["run_as_user"])
     if not interactive:
@@ -248,14 +261,53 @@ def _gather_setup_overrides(args, interactive: bool) -> dict:
     local_ip = args.local_ip or (parsed.hostname if parsed else None) or defaults["local_ip"]
     jellyfin_port = (parsed.port if parsed and parsed.port else None) or defaults["jellyfin_port"]
 
+    manager_ip = _resolve_manager_ip(args, interactive)
+
     return {
         "run_as_user": run_as_user,
         "config_base": config_base,
         "jellyfin_url": jellyfin_url,
         "local_ip": local_ip,
         "jellyfin_port": jellyfin_port,
+        "manager_ip": manager_ip,
         "image_dir": default_image_dir,
     }
+
+
+def _resolve_manager_ip(args, interactive: bool) -> str:
+    """This box's own LAN IP, for the join QR code -- distinct from
+    local_ip (the Jellyfin server's address). Auto-detected via the
+    no-traffic UDP-connect trick, with a chance to confirm/override
+    interactively.
+    """
+    if args.manager_ip:
+        return args.manager_ip
+
+    detected = qrgen.detect_outbound_ip()
+
+    if interactive:
+        prompt_default = detected or "none detected"
+        entered = input(f"This Pi's own LAN IP, for the join QR code [{prompt_default}]: ").strip()
+        if entered:
+            return entered
+        if detected:
+            return detected
+        print(
+            "WARNING: couldn't auto-detect this Pi's LAN IP and none was entered -- "
+            'set "manager_ip" in the config by hand, then run `jellyfin-shim-manager '
+            "generate-qr --force` (the join QR code will be wrong until then).",
+            file=sys.stderr,
+        )
+        return ""
+
+    if not detected:
+        print(
+            "WARNING: --manager-ip not given and auto-detection failed -- "
+            'set "manager_ip" in the config by hand, then run `jellyfin-shim-manager '
+            "generate-qr --force` (the join QR code will be wrong until then).",
+            file=sys.stderr,
+        )
+    return detected
 
 
 def _prompt_set_admin_password(owner: str = None):
@@ -409,7 +461,7 @@ def _generate_join_qr(cfg: dict, force: bool = False):
     except ImportError as exc:
         print(f"WARNING: qrcode/Pillow not installed -- skipping join-qr.png ({exc})", file=sys.stderr)
         return
-    print(f"join-qr.png ready at {dest} (pass --regenerate-qr to rebuild it)")
+    print(f"join-qr.png ready at {dest} (join URL: {qrgen.join_url(cfg)}, pass --regenerate-qr to rebuild it)")
 
 
 def cmd_generate_qr(cfg: dict, args):
@@ -474,7 +526,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_setup.add_argument("--config-base", help="directory to store per-user shim configs (default: <their home>/mpv-shim-configs)")
     p_setup.add_argument("--jellyfin-url", help="Jellyfin server URL, e.g. http://192.168.1.10:8096")
-    p_setup.add_argument("--local-ip", help="LAN IP `monitor` health-checks (default: parsed from --jellyfin-url)")
+    p_setup.add_argument("--local-ip", help="LAN IP `monitor` health-checks (default: parsed from --jellyfin-url) -- the Jellyfin SERVER's address")
+    p_setup.add_argument("--manager-ip", help="this Pi's own LAN IP, embedded in the join QR code (default: auto-detected)")
     p_setup.add_argument("--no-enable", action="store_true", help="install units without enabling/starting them")
     p_setup.add_argument(
         "--no-monitor-service", action="store_true",

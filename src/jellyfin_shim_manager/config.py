@@ -60,10 +60,19 @@ def _build_defaults() -> dict:
         "service_prefix": "jellyfin-mpv-shim@",
         "display": ":0",
         # Jellyfin server -- there's no sane default; setup prompts for this.
+        # NOTE: local_ip is the *Jellyfin server's* LAN IP (used only by
+        # monitor.py's health check) -- it is NOT this box's own address.
+        # See manager_ip below for that; conflating the two pointed the
+        # join QR code at the wrong machine whenever the Pi running
+        # jellyfin-shim-manager isn't also the Jellyfin server.
         "jellyfin_url": "",
         "jellyfin_port": 8096,
         "local_ip": "",
         "tailscale_ip": "",
+        # This box's own LAN IP -- what other devices use to reach the
+        # join/admin web app, e.g. the QR code on the idle status screen.
+        # Auto-detected (with a chance to confirm/override) by `setup`.
+        "manager_ip": "",
         # Join + admin web app.
         "bind_host": "0.0.0.0",
         "bind_port": 5005,
